@@ -1,0 +1,9 @@
+{
+  "name": "scf_energy",
+  "description": "Self-consistent single-point calculations targeting total-energy reporting.",
+  "prompt_template": "For {material_context}, run a self-consistent field (SCF) calculation and report the converged total energy per formula unit in eV. Ensure electronic convergence tighter than 1.0e-8 Ry.\n{pseudopotential_text}\n{parameter_text}",
+  "required_ground_truth": [
+    "total_energy_ev_per_fu"
+  ],
+  "default_parameters": {}
+}

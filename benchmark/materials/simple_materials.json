@@ -1,0 +1,150 @@
+{
+  "materials": [
+    {
+      "id": "silicon_diamond",
+      "info": {
+        "name": "Silicon",
+        "formula": "Si",
+        "space_group": "Fd-3m",
+        "structure": "diamond cubic",
+        "cell_type": "primitive cell",
+        "lattice_constants_angstrom": {
+          "a": 5.43
+        }
+      },
+      "parameters": {},
+      "ground_truth": {
+        "relaxed_structure": null
+      },
+      "metadata": {}
+    },
+    {
+      "id": "aluminum_fcc",
+      "info": {
+        "name": "Aluminum",
+        "formula": "Al",
+        "space_group": "Fm-3m",
+        "structure": "FCC",
+        "cell_type": "primitive cell",
+        "lattice_constants_angstrom": {
+          "a": 4.05
+        }
+      },
+      "parameters": {},
+      "ground_truth": {
+        "relaxed_structure": null,
+        "total_energy_ev_per_fu": -3.74
+      },
+      "metadata": {}
+    },
+    {
+      "id": "iron_bcc",
+      "info": {
+        "name": "Iron",
+        "formula": "Fe",
+        "space_group": "Im-3m",
+        "structure": "BCC",
+        "cell_type": "primitive cell",
+        "lattice_constants_angstrom": {
+          "a": 2.87
+        }
+      },
+      "parameters": {},
+      "ground_truth": {
+        "relaxed_structure": null
+      },
+      "metadata": {}
+    },
+    {
+      "id": "nacl_rocksalt",
+      "info": {
+        "name": "Sodium Chloride",
+        "formula": "NaCl",
+        "space_group": "Fm-3m",
+        "structure": "rocksalt",
+        "cell_type": "primitive cell",
+        "lattice_constants_angstrom": {
+          "a": 5.64
+        }
+      },
+      "parameters": {},
+      "ground_truth": {
+        "relaxed_structure": null
+      },
+      "metadata": {}
+    },
+    {
+      "id": "gaas_zincblende",
+      "info": {
+        "name": "Gallium Arsenide",
+        "formula": "GaAs",
+        "space_group": "F-43m",
+        "structure": "zinc blende",
+        "cell_type": "primitive cell",
+        "lattice_constants_angstrom": {
+          "a": 5.65
+        }
+      },
+      "parameters": {},
+      "ground_truth": {
+        "relaxed_structure": null
+      },
+      "metadata": {}
+    },
+    {
+      "id": "mgo_rocksalt",
+      "info": {
+        "name": "Magnesium Oxide",
+        "formula": "MgO",
+        "space_group": "Fm-3m",
+        "structure": "rocksalt",
+        "cell_type": "primitive cell",
+        "lattice_constants_angstrom": {
+          "a": 4.21
+        }
+      },
+      "parameters": {},
+      "ground_truth": {
+        "relaxed_structure": null
+      },
+      "metadata": {}
+    },
+    {
+      "id": "graphene_hexagonal",
+      "info": {
+        "name": "Graphene",
+        "formula": "C",
+        "space_group": "P6_3/mmc",
+        "structure": "hexagonal",
+        "cell_type": "primitive cell",
+        "lattice_constants_angstrom": {
+          "a": 2.46
+        }
+      },
+      "parameters": {},
+      "ground_truth": {
+        "relaxed_structure": null
+      },
+      "metadata": {}
+    },
+    {
+      "id": "graphite_ab",
+      "info": {
+        "name": "Graphite (AB)",
+        "formula": "C",
+        "space_group": "P6_3/mmc",
+        "structure": "hexagonal layered",
+        "cell_type": "conventional cell",
+        "lattice_constants_angstrom": {
+          "a": 2.46,
+          "c": 6.70
+        }
+      },
+      "parameters": {},
+      "ground_truth": {
+        "total_energy_ev_per_fu": -9.22
+      },
+      "metadata": {}
+    }
+  ]
+}

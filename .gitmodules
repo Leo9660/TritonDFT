@@ -1,0 +1,3 @@
+[submodule "QuantumE"]
+	path = QuantumE
+	url = https://github.com/QEF/q-e.git
