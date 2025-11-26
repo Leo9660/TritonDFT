@@ -1,0 +1,4 @@
+QuantumE
+job_*
+.venv
+__pycache__
