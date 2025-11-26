@@ -11,6 +11,8 @@ cd ..
 
 ## 2. Run
 ```
+export OPENAI_API_KEY=xxx
+export MP_API_KEY=xxx
 python test/new_test.py
 ```
 
