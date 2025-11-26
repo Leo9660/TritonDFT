@@ -36,6 +36,27 @@ Even though CMake can guess compilers, explicitly set `CMAKE_Fortran_COMPILER` a
 Refer to the QE documentation in `Doc/`, the package-specific `*/Doc/` folders, and https://www.quantum-espresso.org/ for more background. Technical notes for users/developers live on the QE GitLab wiki.
 
 ## Running the agent
-1. Export the APIs you need (OpenAI + Materials Project). Either run `export OPENAI_API_KEY=...` and `export PMG_MAPI_KEY=...` manually or reuse the commands you placed in `test/env_setup.sh`.
+1. Export the APIs you need (OpenAI + Materials Project). Either run `export OPENAI_API_KEY=...` and `export MP_API_KEY=...` manually or reuse the commands you placed in `test/env_setup.sh`.
 2. Ensure the QE binaries you built reside in `QuantumE/bin` (the default path used inside `DFTAgent.py`). Update `self.qe_bin_prefix`/`self.pseudo_dir` there if your layout differs.
 3. Execute the sample workflow: `python test/new_test.py`. The script initializes `DFTAgent`, submits a Si relaxation → SCF → NSCF request, and logs outputs to `evaluation.log` so you can verify that the full stack is wired correctly.
+
+
+```
+pip install -r requirements.txt
+git config --global --add safe.directory '*'
+git submodule update --init --recursive
+cd QuantumE && ./configure && make all -j$(nproc)
+cd ..
+```
+
+```
+docker run -it -v $(pwd):/workspace  \
+-e OPENAI_API_KEY=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 \
+-e MP_API_KEY=3eLwNGQn4F5tMLgLmoRErmGbY6k2KjLv \
+--name triton-dft-lyc -p 8000:8000 triton-dft /bin/bash
+
+
+docker start -ai triton-dft-lyc
+
+uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+```

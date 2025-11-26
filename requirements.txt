@@ -1,6 +1,10 @@
-numpy
+numpy==1.26.4
 torch
 transformers
 openai
-mp-api
-pymatgen
+mpcontribs-client
+pymatgen==2023.12.18
+emmet-core==0.68.0
+mp-api==0.35.1
+fastapi
+uvicorn
