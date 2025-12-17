@@ -86,7 +86,7 @@ class DFTAgent:
         )
 
         # Tool setup params
-        self.qe_bin_prefix = "../QuantumE/bin/"
+        # self.qe_bin_prefix = "../QuantumE/bin/"
         self.pseudo_dir = "../SSSP_clean/"
         self.out_dir = "./"
 
