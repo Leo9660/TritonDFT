@@ -98,6 +98,7 @@ class SlurmLauncher:
 
         messages = get_prompt(
             prompt_type="slurm",
+            exec_name=exec_name,
             exec_path=exec_path,
             work_dir=str(work_dir),
             input_dir=input_path,
