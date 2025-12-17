@@ -109,19 +109,21 @@ def fetch_initial_structures_from_api_snippet(snippet: str, limit: int = 25, ver
         if mdoc and getattr(mdoc, "initial_structures", None):
             init_list[mid] = [e.to(fmt="cif") for e in mdoc.initial_structures]
 
-        docs = mpr.summary.search(
-            material_ids=mid,
-            fields=[
-                "energy_above_hull",
-            ],
-        )
+        with MPRester() as mpr:
+            docs_iter = mpr.materials.summary.search(
+                material_ids=[mid],
+                fields=[
+                    "energy_above_hull",
+                ],
+            )
+            docs = list(docs_iter)
 
-        for i, doc in enumerate(docs):
-            if doc.energy_above_hull < ehull_min:
-                ehull_min = doc.energy_above_hull
-                min_id = mid
-                min_subid = i
-                print(f"New min ehull: {ehull_min} for {min_id} (subid {min_subid})")
+            for i, doc in enumerate(docs):
+                if doc.energy_above_hull < ehull_min:
+                    ehull_min = doc.energy_above_hull
+                    min_id = mid
+                    min_subid = i
+                    print(f"New min ehull: {ehull_min} for {min_id} (subid {min_subid})")
 
     result["material_ids"].append(min_id)
     result["initial_structures"].append(init_list[min_id][min_subid])

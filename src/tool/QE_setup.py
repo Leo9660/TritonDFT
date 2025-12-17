@@ -1,7 +1,7 @@
 PseudoDojo_dir = "- In &control, always set pseudo_dir: " \
-"If functional = LDA, set pseudo_dir=/workspace/DFTagent/PseudoDojo/SR_v0.4.1/LDA_standard. " \
-"If functional = PBE, set pseudo_dir=/workspace/DFTagent/PseudoDojo/SR_v0.4.1/PBE_standard. " \
-"If functional = PBEsol, set pseudo_dir=/workspace/DFTagent/PseudoDojo/SR_v0.4.1/PBEsol_standard. "
+"If functional = LDA, set pseudo_dir=../PseudoDojo/SR_v0.4.1/LDA_standard. " \
+"If functional = PBE, set pseudo_dir=../PseudoDojo/SR_v0.4.1/PBE_standard. " \
+"If functional = PBEsol, set pseudo_dir=../PseudoDojo/SR_v0.4.1/PBEsol_standard. "
 
 # ---- pw.x requirement specification ----
 
