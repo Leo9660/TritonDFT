@@ -53,12 +53,17 @@ class SlurmLauncher:
                 raise RuntimeError("Slurm execution cancelled by user.")
 
             completed = subprocess.run(
-                ["bash", str(script_path)],
+                ["sbatch", "--wait", str(script_path)],
                 cwd=str(work_dir_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                check=True,
             )
+
+            if completed.returncode != 0:
+                raise RuntimeError(completed.stderr)
+
             if verbose:
                 if completed.stdout:
                     print(f"[slurm][stdout]\n{completed.stdout}")
@@ -93,7 +98,6 @@ class SlurmLauncher:
 
         messages = get_prompt(
             prompt_type="slurm",
-            exec_name=exec_name,
             exec_path=exec_path,
             work_dir=str(work_dir),
             input_dir=input_path,
@@ -122,18 +126,18 @@ class SlurmLauncher:
         script_lines = ["#!/bin/bash"]
         if header_text:
             script_lines.extend(line for line in header_text.splitlines() if line.strip())
-        script_lines.append("")
-        script_lines.append(f"echo Running {os.path.basename(input_path)}")
-        output_name = f"output_{input_index}.out"
-        script_lines.append(
-            self._build_slurm_command(
-                exec_path=exec_path,
-                input_name=os.path.basename(input_path),
-                output_name=output_name,
-                parallel_exec=parallel_exec,
-                parallel_np=parallel_np,
-            )
-        )
+        # script_lines.append("")
+        # script_lines.append(f"echo Running {os.path.basename(input_path)}")
+        # output_name = f"output_{input_index}.out"
+        # script_lines.append(
+        #     self._build_slurm_command(
+        #         exec_path=exec_path,
+        #         input_name=os.path.basename(input_path),
+        #         output_name=output_name,
+        #         parallel_exec=parallel_exec,
+        #         parallel_np=parallel_np,
+        #     )
+        # )
         return "\n".join(script_lines).rstrip()
 
     def _build_slurm_command(
