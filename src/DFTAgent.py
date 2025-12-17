@@ -9,9 +9,10 @@ import datetime
 from prompt import get_prompt
 from tool import get_spec, fetch_initial_structures_from_api_snippet
 from generator import UnifiedGenerator
-from utils import get_qe_prefix, parse_scripts_block, write_inputs, run_qe_inputs, \
+from slurm_launcher import SlurmLauncher
+from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
 parse_plan_string, patch_qe_input_file, get_qe_result, extract_json_brutal, output_to_log_file
-from transformers import pipeline
+from executor import run_qe_inputs
 
 class DFTAgent:
     """
@@ -36,6 +37,8 @@ class DFTAgent:
         need_query_info: bool = False,  # New parameter to control info query
         parallel_exec: bool = False,
         parallel_np: int = 1,
+        run_mode: str = "mpirun",
+        slurm_auto_confirm: bool = False, # whether the Slurm job submission is bypassing human confirmation, False stands for manual confirmation
         evaluation_mode: bool = False, # Evaluate results of each subproblem
         output_log: bool = False,
         output_log_file: str = "dft_agent_log.txt"
@@ -55,6 +58,11 @@ class DFTAgent:
 
         self.parallel_exec = parallel_exec
         self.parallel_np = parallel_np
+        valid_run_modes = {"mpirun", "local", "slurm"}
+        if run_mode not in valid_run_modes:
+            raise ValueError(f"run_mode must be one of {valid_run_modes}.")
+        self.run_mode = run_mode
+        self.slurm_auto_confirm = slurm_auto_confirm
         
         # Updated to support OpenAI API calls
         self.generator = UnifiedGenerator(
@@ -68,6 +76,13 @@ class DFTAgent:
             verbose=self.verbose,
             openai_api_key=openai_api_key,  # Passing OpenAI API key
             openai_base_url=openai_base_url,  # Passing OpenAI base URL
+        )
+
+        self.slurm_launcher = SlurmLauncher(
+            generator=self.generator,
+            max_new_tokens=self.max_new_tokens,
+            verbose=self.verbose,
+            auto_confirm=self.slurm_auto_confirm,
         )
 
         # Tool setup params
@@ -272,7 +287,9 @@ class DFTAgent:
                 work_dir=work_dir,
                 verbose=self.verbose,
                 parallel_exec=self.parallel_exec,
-                parallel_np=self.parallel_np
+                parallel_np=self.parallel_np,
+                run_mode=self.run_mode,
+                slurm_launcher=self.slurm_launcher.launch if self.run_mode == "slurm" else None
             )
 
             input_list, output_list = get_qe_result(work_dir=work_dir, input_paths=input_paths, verbose=self.verbose)

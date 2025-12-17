@@ -4,6 +4,7 @@ from prompt.tool_setup import parameter_prompt, script_prompt_fixed
 from prompt.result_parse import result_parse_prompt
 from prompt.result_judge import result_judge_prompt
 from prompt.info_query import api_call_prompt
+from prompt.slurm_execution import slurm_execution_prompt
 
 def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
     """
@@ -31,6 +32,8 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
         template = result_judge_prompt
     elif prompt_type == "api_call":
         template = api_call_prompt
+    elif prompt_type == "slurm":
+        template = slurm_execution_prompt
     else:
         raise ValueError(f"Unknown prompt type: {prompt_type}")
 
