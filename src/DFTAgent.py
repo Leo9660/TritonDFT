@@ -25,6 +25,7 @@ class DFTAgent:
         self,
         model: str,
         dft_tool: str = "quantum espresso",
+        pseudo_dir: str = "../SSSP_clean/", # Pseudopotential directory
         verbose: bool = False,
         work_dir: str = "tmp",
         max_new_tokens: int = 2048,
@@ -87,7 +88,7 @@ class DFTAgent:
 
         # Tool setup params
         # self.qe_bin_prefix = "../QuantumE/bin/"
-        self.pseudo_dir = "../SSSP_clean/"
+        self.pseudo_dir = pseudo_dir
         self.out_dir = "./"
 
         # Evaluation and logging
