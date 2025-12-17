@@ -124,7 +124,7 @@ class SlurmLauncher:
             raise
 
         header_text = script_out[0]["generated_text"].strip()
-        script_lines = ["#!/bin/bash"]
+        script_lines = []
         if header_text:
             script_lines.extend(line for line in header_text.splitlines() if line.strip())
         # script_lines.append("")
@@ -139,7 +139,10 @@ class SlurmLauncher:
         #         parallel_np=parallel_np,
         #     )
         # )
-        return "\n".join(script_lines).rstrip()
+        results = "\n".join(script_lines).rstrip()
+        print(f"[slurm] Generated Slurm script:\n{results}")
+
+        return results
 
     def _build_slurm_command(
         self,
