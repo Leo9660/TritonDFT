@@ -1,7 +1,5 @@
 import json
 import re
-import shlex
-import subprocess
 import os
 from typing import Optional, Any, Dict, List
 
@@ -161,44 +159,6 @@ def write_inputs(work_dir: str, scripts: list, prefix: str = "input", suffix: st
             f.write(content.rstrip() + "\n")
         paths.append(path)
     return paths
-
-def run_qe_inputs(exec_name: str, qe_prefix: str, input_paths: list, work_dir: str, verbose: bool = False,
-    parallel_exec: bool = False, parallel_np: int = 1):
-    """
-    execute one by one with {qe_prefix}/{exec_name} -in input_i.in | tee output_i.out
-    return (retcodes, output_paths)
-    """
-
-    # construct the executable path (allow empty qe_prefix to use PATH)
-    exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
-    output_paths = []
-    retcodes = []
-    for idx, in_path in enumerate(input_paths, start=1):
-        out_path = os.path.join(work_dir, f"output_{idx}.out")
-        output_paths.append(out_path)
-
-        if parallel_exec:
-            cmd = f"mpirun --allow-run-as-root -np {parallel_np} {shlex.quote(exec_path)} -in {shlex.quote(os.path.basename(in_path))} | tee {shlex.quote(os.path.basename(out_path))}"
-        else:
-            cmd = f"{shlex.quote(exec_path)} -in {shlex.quote(os.path.basename(in_path))} | tee {shlex.quote(os.path.basename(out_path))}"
-        if verbose:
-            print(f"[runner] Running: {cmd} (cwd={work_dir})")
-
-        completed = subprocess.run(
-            ["bash", "-lc", cmd],
-            cwd=work_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-
-        retcodes.append(completed.returncode)
-        if verbose:
-            print(f"[runner] Return code: {completed.returncode}")
-            if completed.stderr:
-                print(f"[runner][stderr]\n{completed.stderr}")
-
-    return retcodes, output_paths
 
 def get_qe_result(work_dir: str, input_paths: list, verbose: bool = False) -> list:
     input_text = []
