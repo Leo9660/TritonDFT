@@ -1,13 +1,15 @@
 slurm_execution_prompt = {
     "role": "user",
-    "content": """I have a Slurm call to invoke `{exec_name}` for the input files located in `{input_dir}`.
+    "content": """I have a Slurm call to invoke `{exec_path}` for the input files located in `{input_dir}`.
     I want the output to be `{output_dir}`.
-Please choose a suitable Slurm submission pattern, select partitions/nodes/tasks-per-node, and configure parallel resources
-based on {parallel_np} ranks when {parallel_exec} is true.
-Use the command below as the execution example:
+Please choose a suitable Slurm submission pattern, select partitions/nodes/tasks-per-node.
+Use on {parallel_np} ranks for mpirun.
+
+### Below is the execution script file template:
+#SBATCH --partition=shared
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node=128
-#SBATCH -t 20:00:00
+#SBATCH -t 1:00:00
 #SBATCH -o qe.out
 #SBATCH -e qe.err
 #SBATCH -p compute
@@ -25,13 +27,12 @@ exe=`pw.x`
 INPUT={input_dir}
 OUTPUT={output_dir}
 export OMP_NUM_THREADS=1
-mpirun $exe -in $INPUT > $OUTPUT
+mpirun -np {parallel_np} $exe -in $INPUT > $OUTPUT
 
-Input details:
+### Input details:
 {input_context}
 
-Return ONLY the Slurm batch directives or environment setup (lines beginning with `#SBATCH` or module commands).
-Do NOT include `#!/bin/bash`, loops, or per-input commands—those will be appended afterwards.
-Keep the output minimal so it can be inserted header-first into our script template.
+Important:
+Please use mpirun instead of srun or command-line execution. Only output the final script without any explanation.
 """
 }
