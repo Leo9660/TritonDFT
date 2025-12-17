@@ -6,6 +6,7 @@ Please choose a suitable Slurm submission pattern, select partitions/nodes/tasks
 Use on {parallel_np} ranks for mpirun.
 
 ### Below is the execution script file template:
+#!/bin/bash
 #SBATCH --partition=shared
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node=1
@@ -32,7 +33,10 @@ mpirun -np {parallel_np} $exe -in $INPUT > $OUTPUT
 ### Input details:
 {input_context}
 
-Important:
-Please use mpirun instead of srun or command-line execution. Only output the final script without any explanation. Do not output anything outside the script block.
-"""
+IMPORTANT OUTPUT CONSTRAINTS (STRICT):
+- Output MUST be raw bash script text only. DO NOT use Markdown formatting of any kind.
+- You MUST output raw plain-text only. Rendering, formatting, or wrapping is strictly forbidden. This includes but is not limited to Markdown, code fences (``` or ```bash), HTML, XML, or any other presentation format.
+- The first character of the output MUST be `#` from `#!/bin/bash`.
+- The last character of the output MUST be the last character of the final command.
+- If you violate any of these rules, the output is considered incorrect."""
 }
