@@ -126,7 +126,11 @@ class SlurmLauncher:
         header_text = script_out[0]["generated_text"].strip()
         script_lines = []
         if header_text:
-            script_lines.extend(line for line in header_text.splitlines() if line.strip())
+            script_lines.extend(
+                line for line in header_text.splitlines()
+                if line.strip() and not line.lstrip().startswith("```")
+            )
+            
         # script_lines.append("")
         # script_lines.append(f"echo Running {os.path.basename(input_path)}")
         # output_name = f"output_{input_index}.out"
