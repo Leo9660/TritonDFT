@@ -58,7 +58,7 @@ class SlurmLauncher:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                check=True,
+                check=False,
             )
 
             if completed.returncode != 0:

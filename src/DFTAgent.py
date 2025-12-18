@@ -340,7 +340,7 @@ class DFTAgent:
                     print(f"[solve_sub_problem] new parameter output received: {params_json}")
 
         # Evaluate the output result
-        if self.evaluation_mode:
+        if self.evaluation_mode
             for i, (input_path, output_path) in enumerate(zip(input_paths, output_paths)):
                 if hasattr(fn_spec, "eval_func") and fn_spec.eval_func is not None:
                     eval_result = fn_spec.eval_func(input_path, output_path)
