@@ -2,14 +2,16 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import os
 import datetime
 
 from prompt import get_prompt
-from tool import get_spec, fetch_initial_structures_from_api_snippet
+from prompt.tool_requirements import get_parse_requirement, get_pw_requirement
+from config import Config
 from generator import UnifiedGenerator
 from slurm_launcher import SlurmLauncher
+from tool import get_spec, fetch_initial_structures_from_api_snippet
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
 parse_plan_string, patch_qe_input_file, get_qe_result, extract_json_brutal, output_to_log_file
 from executor import run_qe_inputs
@@ -25,7 +27,6 @@ class DFTAgent:
         self,
         model: str,
         dft_tool: str = "quantum espresso",
-        pseudo_dir: str = "../SSSP_clean/", # Pseudopotential directory
         verbose: bool = False,
         work_dir: str = "tmp",
         max_new_tokens: int = 2048,
@@ -42,8 +43,11 @@ class DFTAgent:
         slurm_auto_confirm: bool = False, # whether the Slurm job submission is bypassing human confirmation, False stands for manual confirmation
         evaluation_mode: bool = False, # Evaluate results of each subproblem
         output_log: bool = False,
-        output_log_file: str = "dft_agent_log.txt"
+        output_log_file: str = "dft_agent_log.txt",
+        config_name: Optional[str] = None,
     ):
+        self.config_name = config_name or "config.yaml"
+        self.config = Config.load(self.config_name)
         self.model = model
         self.dft_tool = dft_tool
         if self.dft_tool != "quantum espresso":
@@ -64,6 +68,8 @@ class DFTAgent:
             raise ValueError(f"run_mode must be one of {valid_run_modes}.")
         self.run_mode = run_mode
         self.slurm_auto_confirm = slurm_auto_confirm
+        self.pseudo_dirs = self.config.pseudo
+        self.pseudo_dir = self.config.pseudo.PBE
         
         # Updated to support OpenAI API calls
         self.generator = UnifiedGenerator(
@@ -88,7 +94,6 @@ class DFTAgent:
 
         # Tool setup params
         # self.qe_bin_prefix = "../QuantumE/bin/"
-        self.pseudo_dir = pseudo_dir
         self.out_dir = "./"
 
         # Evaluation and logging
@@ -214,6 +219,7 @@ class DFTAgent:
             loop_time += 1
 
             # Previous run failed
+            tool_requirements = self._build_tool_requirements(fn_spec)
             if loop_time > 1:
                 script_prompt = get_prompt(prompt_type="script_fixed",
                 bin_tool=fn_spec.exec,
@@ -226,9 +232,9 @@ class DFTAgent:
                 query=query,
                 initial_structures=initial_structures,
                 subproblem=subproblem['problem'],
-                tool_requirements=fn_spec.requirement
+                tool_requirements=tool_requirements
                 )
-            else:                
+            else:
                 script_prompt = get_prompt(prompt_type="script",
                 bin_tool=fn_spec.exec,
                 tool_mode=fn_spec.mode if fn_spec.mode else "standard",
@@ -239,7 +245,7 @@ class DFTAgent:
                 query=query,
                 initial_structures=initial_structures,
                 subproblem=subproblem['problem'],
-                tool_requirements=fn_spec.requirement
+                tool_requirements=tool_requirements
                 )
 
             script_out = self.generator(script_prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
@@ -297,8 +303,9 @@ class DFTAgent:
 
             # Parse the output results
             for i, (input_file, output_file) in enumerate(zip(input_list, output_list)):
+                parse_requirement = get_parse_requirement(fn_spec.parse_requirement_key)
                 messages = get_prompt(prompt_type="result_parse", input_json=params_json,
-                input_file=input_file, output_text=output_file, fn=fn_spec.exec, parse_requirement=fn_spec.parse_requirement)
+                input_file=input_file, output_text=output_file, fn=fn_spec.exec, parse_requirement=parse_requirement)
 
                 try:
                     result_out = self.generator(messages[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
@@ -356,6 +363,11 @@ class DFTAgent:
             "details": f"Executed {subproblem['tool']}!"
         }
         return result
+
+    def _build_tool_requirements(self, fn_spec) -> str:
+        if fn_spec.requirement_key == "pw":
+            return get_pw_requirement(self.pseudo_dirs)
+        return ""
 
     def run(self, query: str) -> Any:
         """

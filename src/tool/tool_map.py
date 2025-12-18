@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
-from tool.QE_setup import pw_requirement, scf_parse_requirement, vc_relax_parse_requirement
 from evaluate.relax_eval import run_relax_metrics, run_relax_metrics_input
 from evaluate.scf_eval import run_scf_metrics, run_scf_metrics_input
 
@@ -23,8 +22,8 @@ class ToolSpec:
     optional: Tuple[str, ...] = ()
     description: str = ""
     section: str = ""  # Description of required sections in input file
-    requirement: str = ""  # Additional textual requirements for the input file
-    parse_requirement: str = ""  # Parsing requirements for the output file
+    requirement_key: Optional[str] = None  # Additional textual requirements for the input file
+    parse_requirement_key: Optional[str] = None  # Parsing requirements for the output file
 
     def __post_init__(self):
         if self.exec == "pw.x":
@@ -60,8 +59,8 @@ FN_MAP: Dict[str, ToolSpec] = {
         optional=("ecutwfc", "ecutrho", "kpoints", "occupations", "smearing", "degauss", "ibrav",
                   "structure", "structure_from", "CELL_PARAMETERS", "ATOMIC_POSITIONS"),
         description="Self-consistent field calculation with pw.x",
-        requirement=pw_requirement,
-        parse_requirement=scf_parse_requirement,
+        requirement_key="pw",
+        parse_requirement_key="scf",
     ),
     "pw_nscf": ToolSpec(
         exec="pw.x",
@@ -70,7 +69,7 @@ FN_MAP: Dict[str, ToolSpec] = {
         optional=("kpoints", "kpath", "kpath_points", "occupations", "ibrav",
                   "structure", "structure_from"),
         description="Non-self-consistent run for DOS/bands preparation",
-        requirement=pw_requirement,
+        requirement_key="pw",
     ),
     "pw_relax": ToolSpec(
         exec="pw.x",
@@ -79,7 +78,7 @@ FN_MAP: Dict[str, ToolSpec] = {
         optional=("ion_dynamics", "forc_conv_thr", "press_conv_thr", "ibrav",
                   "structure", "structure_from"),
         description="Ionic relaxation with pw.x",
-        requirement=pw_requirement,
+        requirement_key="pw",
     ),
     "pw_vc_relax": ToolSpec(
         exec="pw.x",
@@ -88,8 +87,8 @@ FN_MAP: Dict[str, ToolSpec] = {
         optional=("cell_dynamics", "ion_dynamics", "forc_conv_thr", "press_conv_thr", "ibrav",
                   "structure", "structure_from"),
         description="Variable-cell relaxation with pw.x",
-        requirement=pw_requirement,
-        parse_requirement=vc_relax_parse_requirement,
+        requirement_key="pw",
+        parse_requirement_key="vc-relax",
     ),
     "pw_bands": ToolSpec(
         exec="pw.x",
