@@ -27,6 +27,7 @@ pw_requirement_template = """
     - Ensure ntyp equals the number of unique species labels. ATOMIC_SPECIES must contain exactly those species, one line per species.
 
     [Pseudopotentials]
+    - You MUST set pseudo_dir according to the following instructions, or the script will be invalid.
     - {pseudo_dir_instructions}
     - pseudo filenames in ATOMIC_SPECIES MUST be <element_lowercase>.upf (e.g., na.upf).
     - The number of ATOMIC_SPECIES entries MUST match ntyp exactly.
