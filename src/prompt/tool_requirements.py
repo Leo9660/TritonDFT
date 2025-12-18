@@ -27,7 +27,7 @@ pw_requirement_template = """
     - Ensure ntyp equals the number of unique species labels. ATOMIC_SPECIES must contain exactly those species, one line per species.
 
     [Pseudopotentials]
-    - You MUST set pseudo_dir according to the following instructions, or the script will be invalid.
+    - You MUST set pseudo_dir according to the following instructions:
     - {pseudo_dir_instructions}
     - pseudo filenames in ATOMIC_SPECIES MUST be <element_lowercase>.upf (e.g., na.upf).
     - The number of ATOMIC_SPECIES entries MUST match ntyp exactly.
@@ -75,6 +75,7 @@ vc_relax_parse_requirement = """
 
 def _format_pseudo_dir_instructions(pseudo_paths: "PseudoPaths") -> str:
     return (
+        f"- In &control, always set pseudo_dir depending on the chosen functional. "
         f"If functional=LDA, set pseudo_dir={pseudo_paths.LDA}. "
         f"If functional=PBE, set pseudo_dir={pseudo_paths.PBE}. "
         f"If functional=PBEsol, set pseudo_dir={pseudo_paths.PBESOL}."

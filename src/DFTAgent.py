@@ -39,7 +39,7 @@ class DFTAgent:
         need_query_info: bool = False,  # New parameter to control info query
         parallel_exec: bool = False,
         parallel_np: int = 1,
-        run_mode: str = "mpirun",
+        run_mode: str = "mpirun", # "mpirun", "local", "slurm"
         slurm_auto_confirm: bool = False, # whether the Slurm job submission is bypassing human confirmation, False stands for manual confirmation
         evaluation_mode: bool = False, # Evaluate results of each subproblem
         output_log: bool = False,
@@ -70,6 +70,7 @@ class DFTAgent:
         self.slurm_auto_confirm = slurm_auto_confirm
         self.pseudo_dirs = self.config.pseudo
         self.pseudo_dir = self.config.pseudo.PBE
+        self.qe_bin_prefix = self.config.qe_bin_dir
         
         # Updated to support OpenAI API calls
         self.generator = UnifiedGenerator(
@@ -247,6 +248,8 @@ class DFTAgent:
                 subproblem=subproblem['problem'],
                 tool_requirements=tool_requirements
                 )
+
+            print("[debug] script prompt content:", script_prompt[0]['content'])
 
             script_out = self.generator(script_prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
             if self.verbose:
