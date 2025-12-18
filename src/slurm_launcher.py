@@ -62,7 +62,7 @@ class SlurmLauncher:
             )
 
             if completed.returncode != 0:
-                raise RuntimeError(completed.stderr)
+                print(f"[slurm][error] Slurm job failed with return code {completed.returncode}.")
 
             if verbose:
                 if completed.stdout:
