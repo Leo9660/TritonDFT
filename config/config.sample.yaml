@@ -1,0 +1,5 @@
+pseudo:
+  # Replace these with the actual directories on your system.
+  LDA: /path/to/LDA_standard
+  PBE: /path/to/PBE_standard
+  PBEsol: /path/to/PBEsol_standard

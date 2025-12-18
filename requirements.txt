@@ -8,3 +8,4 @@ emmet-core==0.68.0
 mp-api==0.35.1
 fastapi
 uvicorn
+PyYAML

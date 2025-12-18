@@ -1,11 +1,8 @@
-PseudoDojo_dir = "- In &control, always set pseudo_dir: " \
-"If functional = LDA, set pseudo_dir=../PseudoDojo/SR_v0.4.1/LDA_standard. " \
-"If functional = PBE, set pseudo_dir=../PseudoDojo/SR_v0.4.1/PBE_standard. " \
-"If functional = PBEsol, set pseudo_dir=../PseudoDojo/SR_v0.4.1/PBEsol_standard. "
+from typing import Optional
 
-# ---- pw.x requirement specification ----
+from config import PseudoPaths
 
-pw_requirement =  f"""
+pw_requirement_template = """
     ### Minimal Rules (hard constraints)
     [Sections]
     - Required section order (when applicable): &control, &system, &electrons, &ions (if ions move), &cell (if cell moves), ATOMIC_SPECIES, ATOMIC_POSITIONS (crystal), [CELL_PARAMETERS (alat) if ibrav=0], K_POINTS automatic or an explicit list.
@@ -30,7 +27,7 @@ pw_requirement =  f"""
     - Ensure ntyp equals the number of unique species labels. ATOMIC_SPECIES must contain exactly those species, one line per species.
 
     [Pseudopotentials]
-    - {PseudoDojo_dir}
+    - {pseudo_dir_instructions}
     - pseudo filenames in ATOMIC_SPECIES MUST be <element_lowercase>.upf (e.g., na.upf).
     - The number of ATOMIC_SPECIES entries MUST match ntyp exactly.
 
@@ -53,7 +50,7 @@ pw_requirement =  f"""
         * High-symmetry cubic (fcc/bcc/sc): 0 0 0 (fewer irreducible k-points, faster).
         * Low-symmetry/metallic systems: 1 1 1 (reduces Γ singularities).
         * 2D slabs with nk3=1 (vacuum along c): use 0 0 0 (do NOT shift along the non-sampled direction).
-    - Keep offsets consistent across axes unless you have a clear reason (e.g., layered anisotropy). 
+    - Keep offsets consistent across axes unless you have a clear reason (e.g., layered anisotropy).
 
     [Header formatting & discipline]
     - Section headers must be single-line with qualifiers (e.g., "ATOMIC_POSITIONS (crystal)", "CELL_PARAMETERS (alat)", "K_POINTS automatic").
@@ -61,10 +58,7 @@ pw_requirement =  f"""
     - conv_thr (and related electron-iteration knobs) MUST be inside &electrons.
     - Do NOT place NSCF/SCF-specific knobs outside their proper sections.
     - No explanations, comments, or extra markdown in outputs.
-
 """
-
-# ---- parsing requirements ----
 
 scf_parse_requirement = """
     - total energy (final !-marked energy in Ry)
@@ -76,3 +70,28 @@ scf_parse_requirement = """
 vc_relax_parse_requirement = """
     - final structure of all atoms (final CELL_PARAMETERS and ATOMIC_POSITIONS in the output)
 """
+
+
+def _format_pseudo_dir_instructions(pseudo_paths: "PseudoPaths") -> str:
+    return (
+        f"If functional=LDA, set pseudo_dir={pseudo_paths.LDA}. "
+        f"If functional=PBE, set pseudo_dir={pseudo_paths.PBE}. "
+        f"If functional=PBEsol, set pseudo_dir={pseudo_paths.PBESOL}."
+    )
+
+
+def get_pw_requirement(pseudo_paths: "PseudoPaths") -> str:
+    instructions = _format_pseudo_dir_instructions(pseudo_paths)
+    return pw_requirement_template.format(pseudo_dir_instructions=instructions).strip()
+
+
+_PARSE_REQUIREMENTS = {
+    "scf": scf_parse_requirement,
+    "vc-relax": vc_relax_parse_requirement,
+}
+
+
+def get_parse_requirement(key: Optional[str]) -> str:
+    if not key:
+        return ""
+    return _PARSE_REQUIREMENTS.get(key, "")
