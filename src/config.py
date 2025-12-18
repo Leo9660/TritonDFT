@@ -16,6 +16,7 @@ DEFAULT_PSEUDO_DIRS = {
     "PBE": "../PseudoDojo/SR_v0.4.1/PBE_standard",
     "PBESOL": "../PseudoDojo/SR_v0.4.1/PBEsol_standard",
 }
+DEFAULT_QE_BIN_DIR = "QuantumE/bin"
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class PseudoPaths:
 @dataclass(frozen=True)
 class Config:
     pseudo: PseudoPaths
+    qe_bin_dir: str
     path: Path
 
     @classmethod
@@ -57,7 +59,14 @@ class Config:
         if path.exists():
             data = yaml.safe_load(path.read_text()) or {}
             pseudo_section = data.get("pseudo", {})
+            qe_bin_dir = data.get("qe_bin_dir")
         else:
             pseudo_section = {}
+            qe_bin_dir = None
 
-        return cls(pseudo=PseudoPaths.from_dict(pseudo_section), path=path)
+        final_qe_bin = qe_bin_dir or str((repo_root / DEFAULT_QE_BIN_DIR).resolve())
+        return cls(
+            pseudo=PseudoPaths.from_dict(pseudo_section),
+            qe_bin_dir=final_qe_bin,
+            path=path,
+        )
