@@ -110,8 +110,6 @@ class SlurmLauncher:
             input_context=input_context,
         )
 
-        print("[debug] prompt is : {}".format(messages[0]["content"]))
-
         try:
             script_out = self.generator(
                 messages[0]["content"],
