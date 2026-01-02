@@ -13,11 +13,11 @@ result_parse_prompt = {
     ### Instructions
     1) Parse and summarize the result in concise, machine-consumable JSON.
     2) Include:
-    - success: true/false (whether run finished correctly)
+    - success: true/false (whether run finished correctly).
     - param_used: copy param_json here, include the sweep value actually used in this run
     - key_findings: dictionary of extracted important quantities (e.g. total energy, Fermi level, band gap, lattice constant, forces, stress)
     - conclusion: 1-2 sentence human-readable summary
-    - errors: list of error/warning messages if any
+    - messages: list of error/warning messages if any
 
     ### Input
     Now the input is:
@@ -32,7 +32,7 @@ result_parse_prompt = {
     "param_used": <dict with parameters used in this run>,
     "key_findings": "<findings required by parse_requirement, Please output the unit as well>",
     "conclusion": "<short summary>",
-    "errors": ["<warning or error messages>"]
+    "messages": ["<warning or error messages>"]
     }}
 
     ### Final Requirement

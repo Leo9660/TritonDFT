@@ -42,7 +42,6 @@ script_prompt_fixed = {
 
     Given the parameter JSON below, GENERATE ONLY {bin_tool} input files in {tool_mode} mode (Quantum ESPRESSO style unless otherwise specified).
     Wrap ALL generated inputs inside ONE <scripts> ... </scripts> block; each file inside a <script> ... </script> tag.
-    Output MUST be a single JSON object matching the schema below. Do NOT include any other text, comments, or reasoning.
 
     {tool_requirements}
 
@@ -69,10 +68,13 @@ script_prompt_fixed = {
     For example, if the overall query involves multiple tasks on the same system (e.g., `vc-relax`, `scf`, and `bandgap`), generate scripts **only** for the current subproblem (e.g., `vc-relax`). Future subproblems like `scf` or `bandgap` will be generated later.
 
     Please provide your output, containing only the text wrapped in <scripts> and <script> tags, and do not generate any other text.
+    You MUST output raw plain text. Do NOT format or render anything. Output exactly the text content only. Output must be copy-paste ready for a Unix shell or input file.
+    Do NOT escape or encode any characters. In particular, NEVER output "&amp;".
+    Use literal Quantum ESPRESSO namelists like "&control", "&system", "&electrons".
     """
 }
 
-    # 12) Symmetry breaking for polar or non-centrosymmetric phases:
+    # 12) Symmetry breaking for Output Schema or non-centrosymmetric phases:
     # - If the target structure is non-centrosymmetric, you MUST ensure the calculation does not enforce inversion or higher symmetry.
     # - This can be achieved in one of two ways:
     # (a) Explicitly set in &system: nosym = .true., noinv = .true.

@@ -7,11 +7,12 @@ planner_messages = {
     Output requirements:
     - Decompose the user query into 1..N subproblems.
     - Each subproblem must be wrapped as <subproblem1>...</subproblem1>, <subproblem2>...</subproblem2>, etc. (in order).
-    - Each subproblem must contain:
-    · What to calculate
-    · Tool to use
-    · Required input
-    · Sweep parameters (if none, write "Sweep: none")
+	- Each subproblem must contain four fields:
+	Problem: What to calculate
+	Tool: Tool to use
+	Required input: Required input parameters
+	Sweep parameters: (if none, write "Sweep: none")
+    These fields MUST appear on separate lines, each separated by a newline; otherwise, the output is considered incorrect.
     - Keep each subproblem short (2-3 lines).
     - Do not output anything outside <subproblem> blocks.
 
