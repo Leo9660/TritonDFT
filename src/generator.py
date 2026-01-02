@@ -117,8 +117,7 @@ class UnifiedGenerator:
             resp = self._oa_client.responses.create(
                 model=self.model,
                 input=prompt,
-                temperature=self.temperature,
-                top_p=self.top_p,
+                # top_p=self.top_p,
                 max_output_tokens=max_new_tokens,
                 # seed=self.seed,
             )

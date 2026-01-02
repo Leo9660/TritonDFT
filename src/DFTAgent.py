@@ -10,10 +10,10 @@ from prompt import get_prompt
 from prompt.tool_requirements import get_parse_requirement, get_pw_requirement
 from config import Config
 from generator import UnifiedGenerator
-from slurm_launcher import SlurmLauncher
+from execute_code.slurm import SlurmLauncher
 from tool import get_spec, fetch_initial_structures_from_api_snippet
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
-parse_plan_string, patch_qe_input_file, get_qe_result, extract_json_brutal, output_to_log_file
+parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file
 from executor import run_qe_inputs
 
 class DFTAgent:
@@ -37,10 +37,12 @@ class DFTAgent:
         openai_api_key: str = None,  # New parameter for OpenAI API Key
         openai_base_url: str = None,  # New parameter for OpenAI base URL
         need_query_info: bool = False,  # New parameter to control info query
+        auto_parallel: bool = False,
         parallel_exec: bool = False,
         parallel_np: int = 1,
         run_mode: str = "mpirun", # "mpirun", "local", "slurm"
         slurm_auto_confirm: bool = False, # whether the Slurm job submission is bypassing human confirmation, False stands for manual confirmation
+        hardware_description: Optional[str] = None,
         evaluation_mode: bool = False, # Evaluate results of each subproblem
         output_log: bool = False,
         output_log_file: str = "dft_agent_log.txt",
@@ -61,8 +63,10 @@ class DFTAgent:
 
         self.need_query_info = need_query_info
 
+        self.auto_parallel = auto_parallel
         self.parallel_exec = parallel_exec
         self.parallel_np = parallel_np
+        self.hardware_description = hardware_description
         valid_run_modes = {"mpirun", "local", "slurm"}
         if run_mode not in valid_run_modes:
             raise ValueError(f"run_mode must be one of {valid_run_modes}.")
@@ -249,7 +253,7 @@ class DFTAgent:
                 tool_requirements=tool_requirements
                 )
 
-            print("[debug] script prompt content:", script_prompt[0]['content'])
+            # print("[debug] script prompt content:", script_prompt[0]['content'])
 
             script_out = self.generator(script_prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
             if self.verbose:
@@ -298,11 +302,16 @@ class DFTAgent:
                 verbose=self.verbose,
                 parallel_exec=self.parallel_exec,
                 parallel_np=self.parallel_np,
+                auto_parallel=self.auto_parallel,
+                hardware_description=self.hardware_description,
                 run_mode=self.run_mode,
-                slurm_launcher=self.slurm_launcher.launch if self.run_mode == "slurm" else None
+                slurm_launcher=self.slurm_launcher.launch if self.run_mode == "slurm" else None,
+                auto_parallel_generator=self.generator,
+                max_new_tokens=self.max_new_tokens,
             )
 
             input_list, output_list = get_qe_result(work_dir=work_dir, input_paths=input_paths, verbose=self.verbose)
+            output_list = preprocess_output_list(output_list, verbose=self.verbose)
 
             # Parse the output results
             for i, (input_file, output_file) in enumerate(zip(input_list, output_list)):

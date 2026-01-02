@@ -10,6 +10,7 @@ result_judge_prompt = {
 
     ### Task
     Judge whether the current subproblem has been **successfully solved** based on the existing results.
+    Some warning messages in the results do not necessarily indicate failure; focus on whether the main question has been answered.
       - If solved, output:
         {{
           "status": "done",

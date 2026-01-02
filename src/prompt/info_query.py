@@ -2,7 +2,7 @@ api_call_prompt = {
     "role": "user",
     "content": ("""You are an expert assistant that writes Materials Project API queries for retrieving **initial structures**.
 
-    Your goal: Given a natural-language query about a material, output **only one code line (as a quoted string)**
+    Your goal: Given a natural-language query about a material, **output exactly one line of Python code (no surrounding quotes)**
     that calls `mpr.materials.search()` to retrieve its `initial_structures`, using `formula` and `spacegroup_symbol` if available.
 
     The output must be in **exactly one line**, no explanations or comments.

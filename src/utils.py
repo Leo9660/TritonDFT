@@ -160,6 +160,66 @@ def write_inputs(work_dir: str, scripts: list, prefix: str = "input", suffix: st
         paths.append(path)
     return paths
 
+def parse_output_template(output_text: str):
+    """
+    Placeholder for output parsing rules.
+    Extend this function to extract structured data from QE outputs.
+    """
+    return output_text, {}
+
+
+def preprocess_output_list(output_list: List[str], verbose: bool = False) -> List[str]:
+    processed = []
+    for idx, item in enumerate(output_list, start=1):
+        text = _read_output_item(item)
+        cleaned, removed = _strip_bands_blocks(text)
+        if verbose and removed > 0:
+            print(f"[parser] Output {idx}: trimmed {removed} lines from bands blocks.")
+        processed.append(cleaned)
+    return processed
+
+
+def _read_output_item(item: str) -> str:
+    try:
+        if os.path.exists(item):
+            with open(item, "r", encoding="utf-8") as f:
+                return f.read()
+    except OSError:
+        pass
+    return item or ""
+
+
+def _strip_bands_blocks(text: str) -> tuple[str, int]:
+    lines = text.splitlines()
+    cleaned: List[str] = []
+    removed = 0
+    idx = 0
+    header_pattern = re.compile(r"^\s*k\s*=.*bands\s*\(ev\)\s*:?\s*$", re.IGNORECASE)
+    while idx < len(lines):
+        line = lines[idx]
+        if header_pattern.match(line):
+            removed += 1
+            idx += 1
+            while idx < len(lines) and (_is_blank_line(lines[idx]) or _is_numeric_line(lines[idx])):
+                removed += 1
+                idx += 1
+            continue
+        cleaned.append(line)
+        idx += 1
+    return "\n".join(cleaned), removed
+
+
+def _is_blank_line(line: str) -> bool:
+    return not line.strip()
+
+
+def _is_numeric_line(line: str) -> bool:
+    numeric_pattern = re.compile(
+        r"^\s*[-+]?(\d+(\.\d*)?|\.\d+)([eEdD][-+]?\d+)?(\s+[-+]?(\d+(\.\d*)?|\.\d+)([eEdD][-+]?\d+)?)*\s*$"
+    )
+    return bool(numeric_pattern.match(line))
+
+
 def get_qe_result(work_dir: str, input_paths: list, verbose: bool = False) -> list:
     input_text = []
     output_text = []
@@ -178,7 +238,9 @@ def get_qe_result(work_dir: str, input_paths: list, verbose: bool = False) -> li
         # Read the output file
         try:
             with open(out_path, "r", encoding="utf-8") as f:
-                output_text.append(f.read())
+                raw_output = f.read()
+                parsed_output, _ = parse_output_template(raw_output)
+                output_text.append(parsed_output)
         except FileNotFoundError:   
             if verbose:
                 print(f"[parser] Output file not found: {out_path}")
