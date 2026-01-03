@@ -220,9 +220,13 @@ class SlurmLauncher:
         for idx, summary in enumerate(summaries, start=1):
             input_name = os.path.basename(input_paths[idx - 1]) if idx - 1 < len(input_paths) else ""
             output_name = f"output_{idx}.out"
+            try:
+                input_script = Path(input_paths[idx - 1]).read_text()
+            except OSError:
+                input_script = ""
             prompt_text = auto_parallel_prompt.format(
                 exec_path=exec_path,
-                input_script="",
+                input_script=input_script,
                 hardware_description=hw_desc,
                 probe_output=summary,
                 input_filename=input_name,
