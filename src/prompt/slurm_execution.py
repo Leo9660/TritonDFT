@@ -1,7 +1,7 @@
 slurm_execution_prompt = {
     "role": "user",
     "content": """I have a Slurm call to invoke `{exec_name}` for the input files located in `{input_dir}`.
-    I want the output to be `{output_dir}`. You can use `which {exec_name}` to find the executable path.
+    I want the output to be `{output_dir}`. You can use `which {fn}` to find the executable path.
 Please choose a suitable Slurm submission pattern, select partitions/nodes/tasks-per-node.
 Use on {parallel_np} ranks for mpirun.
 
