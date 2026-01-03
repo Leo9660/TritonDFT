@@ -1,13 +1,12 @@
 import os
 import re
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-from execute_code.command_line import _run_commands
 from prompt import get_prompt
 from prompt.auto_parallel import auto_parallel_prompt
+from execute_code.slurm_template import render_slurm_script
 
 
 class SlurmLauncher:
@@ -33,7 +32,7 @@ class SlurmLauncher:
         work_dir_path.mkdir(parents=True, exist_ok=True)
 
         if auto_parallel:
-            command = self._run_probe_scripts(
+            commands = self._run_probe_scripts_and_generate_auto_parallel_commands(
                 exec_name=exec_name,
                 qe_prefix=qe_prefix,
                 input_paths=input_paths,
@@ -43,7 +42,7 @@ class SlurmLauncher:
                 parallel_np=parallel_np,
                 hardware_description=hardware_description,
             )
-            if command:
+            if commands:
                 return self._run_auto_parallel_command(
                     exec_name=exec_name,
                     qe_prefix=qe_prefix,
@@ -52,21 +51,20 @@ class SlurmLauncher:
                     verbose=verbose,
                     parallel_exec=parallel_exec,
                     parallel_np=parallel_np,
-                    command=command,
+                    commands=commands,
                 )
 
         retcodes: List[int] = []
         output_paths: List[str] = []
 
         for idx, input_path in enumerate(input_paths, start=1):
-            script_text = self._generate_slurm_script(
-                exec_name=exec_name,
-                qe_prefix=qe_prefix,
-                input_path=input_path,
-                input_index=idx,
-                work_dir=work_dir,
-                parallel_exec=parallel_exec,
-                parallel_np=parallel_np,
+            output_path = os.path.join(str(work_dir_path), f"output_{idx}.out")
+            script_text = render_slurm_script(
+                exec_path=os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name,
+                input_path=str(input_path),
+                output_path=str(output_path),
+                command_line=f"mpirun -np {parallel_np} $exe -in $INPUT > $OUTPUT",
+                tasks_per_node=parallel_np,
             )
             script_path = work_dir_path / f"slurm_job_{idx}.sh"
             script_content = f"{script_text.rstrip()}\n"
@@ -91,7 +89,7 @@ class SlurmLauncher:
                     print(f"[slurm][stderr]\n{completed.stderr}")
 
             retcodes.append(completed.returncode)
-            output_paths.append(os.path.join(str(work_dir_path), f"output_{idx}.out"))
+            output_paths.append(output_path)
 
         return retcodes, output_paths
 
@@ -100,12 +98,11 @@ class SlurmLauncher:
         exec_name: str,
         qe_prefix: str,
         input_path: str,
-        input_index: int,
+        output_path: str,
         work_dir: str,
         parallel_exec: bool,
         parallel_np: int,
-        output_name: Optional[str] = None,
-        custom_command: Optional[str] = None,
+        command_line: Optional[str] = None,
     ) -> str:
         exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
         try:
@@ -114,71 +111,39 @@ class SlurmLauncher:
             content_lines = []
         input_context = "\n".join(content_lines[:5]) or "No content preview."
 
-        example_command = custom_command or (
-            f"{exec_path} -in {os.path.basename(input_path)} | tee output_1.out"
-        )
-
-        messages = get_prompt(
-            prompt_type="slurm",
-            exec_name=exec_name,
-            exec_path=exec_path,
-            work_dir=str(work_dir),
-            input_list=os.path.basename(input_path),
-            num_inputs=1,
-            parallel_exec=str(parallel_exec).lower(),
-            parallel_np=parallel_np,
-            example_command=example_command,
-            input_context=input_context,
-        )
-        try:
-            script_out = self.generator(
-                messages[0]["content"],
-                max_new_tokens=self.max_new_tokens,
-                return_full_text=False,
+        if command_line is None:
+            messages = get_prompt(
+                prompt_type="slurm",
+                exec_name=exec_name,
+                exec_path=exec_path,
+                work_dir=str(work_dir),
+                input_dir=str(input_path),
+                output_dir=str(output_path),
+                parallel_exec=str(parallel_exec).lower(),
+                parallel_np=parallel_np,
+                input_context=input_context,
             )
-        except Exception as exc:
-            if self.verbose:
-                print(f"[slurm] Script generation failed: {exc}")
-            raise
-
-        header_text = script_out[0]["generated_text"].strip()
-        script_lines = ["#!/bin/bash"]
-        if header_text:
-            script_lines.extend(line for line in header_text.splitlines() if line.strip())
-        script_lines.append("")
-        script_lines.append(f"echo Running {os.path.basename(input_path)}")
-        resolved_output = output_name or f"output_{input_index}.out"
-        if custom_command:
-            script_lines.append(custom_command)
-        else:
-            script_lines.append(
-                self._build_slurm_command(
-                    exec_path=exec_path,
-                    input_name=os.path.basename(input_path),
-                    output_name=resolved_output,
-                    parallel_exec=parallel_exec,
-                    parallel_np=parallel_np,
+            try:
+                script_out = self.generator(
+                    messages[0]["content"],
+                    max_new_tokens=self.max_new_tokens,
+                    return_full_text=False,
                 )
-            )
-        return "\n".join(script_lines).rstrip()
+            except Exception as exc:
+                if self.verbose:
+                    print(f"[slurm] Command generation failed: {exc}")
+                raise
+            command_line = script_out[0]["generated_text"].strip()
 
-    def _build_slurm_command(
-        self,
-        exec_path: str,
-        input_name: str,
-        output_name: str,
-        parallel_exec: bool,
-        parallel_np: int,
-    ) -> str:
-        if parallel_exec:
-            return (
-                f"mpirun --allow-run-as-root -np {parallel_np} "
-                f"{shlex.quote(exec_path)} -in {shlex.quote(input_name)} | "
-                f"tee {shlex.quote(output_name)}"
-            )
-        return (
-            f"{shlex.quote(exec_path)} -in {shlex.quote(input_name)} | "
-            f"tee {shlex.quote(output_name)}"
+        if not command_line:
+            raise RuntimeError("Empty command line generated for Slurm script.")
+
+        return render_slurm_script(
+            exec_path=exec_path,
+            input_path=str(input_path),
+            output_path=str(output_path),
+            command_line=command_line,
+            tasks_per_node=parallel_np if parallel_exec else 1,
         )
 
     def _confirm_slurm_run(self) -> bool:
@@ -192,7 +157,7 @@ class SlurmLauncher:
             answer = "n"
         return answer == "yes"
 
-    def _run_probe_scripts(
+    def _run_probe_scripts_and_generate_auto_parallel_commands(
         self,
         exec_name: str,
         qe_prefix: str,
@@ -202,30 +167,30 @@ class SlurmLauncher:
         parallel_exec: bool,
         parallel_np: int,
         hardware_description: Optional[str],
-    ) -> Optional[str]:
+    ) -> List[Optional[str]]:
         work_dir_path = Path(work_dir)
         probe_paths = [_create_probe_script(path) for path in input_paths]
         probe_outputs = [
             work_dir_path / f"output_{idx}_probe.out"
             for idx in range(1, len(probe_paths) + 1)
         ]
+        exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
 
         for idx, (probe_path, probe_output) in enumerate(zip(probe_paths, probe_outputs), start=1):
-            script_text = self._generate_slurm_script(
-                exec_name=exec_name,
-                qe_prefix=qe_prefix,
+            script_text = render_slurm_script(
+                exec_path=exec_path,
                 input_path=str(probe_path),
-                input_index=idx,
-                work_dir=work_dir,
-                parallel_exec=parallel_exec,
-                parallel_np=parallel_np,
-                output_name=probe_output.name,
+                output_path=str(probe_output),
+                command_line=f"mpirun -np {parallel_np} $exe -in $INPUT > $OUTPUT",
+                tasks_per_node=parallel_np,
             )
+
             script_path = work_dir_path / f"slurm_probe_{idx}.sh"
             script_content = f"{script_text.rstrip()}\n"
             script_path.write_text(script_content, encoding="utf-8")
             script_path.chmod(0o755)
 
+            print(f"[slurm] Generated probe script ({script_path}):\n{script_content}")
             if not self._confirm_slurm_run():
                 raise RuntimeError("Slurm probe execution cancelled by user.")
 
@@ -244,35 +209,41 @@ class SlurmLauncher:
 
         summaries = [_extract_probe_summary(str(path)) for path in probe_outputs]
         if not summaries:
-            return None
+            return []
 
-        first_input = os.path.basename(input_paths[0]) if input_paths else ""
-        first_output = f"output_1.out"
+        exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
         hw_desc = hardware_description or f"Environment with up to {parallel_np} MPI ranks available on shared nodes."
-        prompt_text = auto_parallel_prompt.format(
-            exec_path=os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name,
-            input_script="",
-            hardware_description=hw_desc,
-            probe_output="\n\n".join(summaries),
-            input_filename=first_input,
-            output_filename=first_output,
-        )
-        if verbose:
-            print("[auto_parallel] Querying LLM for auto-parallel plan.")
-        try:
-            result = self.generator(
-                prompt_text,
-                max_new_tokens=self.max_new_tokens,
-                return_full_text=False,
+        commands: List[Optional[str]] = []
+        for idx, summary in enumerate(summaries, start=1):
+            input_name = os.path.basename(input_paths[idx - 1]) if idx - 1 < len(input_paths) else ""
+            output_name = f"output_{idx}.out"
+            prompt_text = auto_parallel_prompt.format(
+                exec_path=exec_path,
+                input_script="",
+                hardware_description=hw_desc,
+                probe_output=summary,
+                input_filename=input_name,
+                output_filename=output_name,
             )
-        except Exception as exc:
-            if self.verbose:
-                print(f"[slurm] Auto-parallel generation failed: {exc}")
-            return None
-        if not result:
-            return None
-        command = result[0].get("generated_text", "").strip()
-        return command or None
+            if verbose:
+                print(f"[auto_parallel] Querying LLM for auto-parallel plan (input {idx}).")
+            try:
+                result = self.generator(
+                    prompt_text,
+                    max_new_tokens=self.max_new_tokens,
+                    return_full_text=False,
+                )
+            except Exception as exc:
+                if self.verbose:
+                    print(f"[slurm] Auto-parallel generation failed: {exc}")
+                commands.append(None)
+                continue
+            if not result:
+                commands.append(None)
+                continue
+            command = result[0].get("generated_text", "").strip()
+            commands.append(command or None)
+        return commands
 
     def _run_auto_parallel_command(
         self,
@@ -283,26 +254,32 @@ class SlurmLauncher:
         verbose: bool,
         parallel_exec: bool,
         parallel_np: int,
-        command: str,
+        commands: List[Optional[str]],
     ) -> Tuple[List[int], List[str]]:
         work_dir_path = Path(work_dir)
         retcodes: List[int] = []
         output_paths: List[str] = []
+        exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
 
         for idx, input_path in enumerate(input_paths, start=1):
+            command = commands[idx - 1] if idx - 1 < len(commands) else None
+            if not command:
+                raise RuntimeError(f"Auto-parallel command missing for input {idx}.")
             input_name = os.path.basename(input_path)
-            output_name = f"output_{idx}.out"
-            cmd = _render_auto_parallel_command(command, input_name, output_name)
-            script_text = self._generate_slurm_script(
-                exec_name=exec_name,
-                qe_prefix=qe_prefix,
-                input_path=input_path,
-                input_index=idx,
-                work_dir=work_dir,
-                parallel_exec=parallel_exec,
-                parallel_np=parallel_np,
+            output_path = os.path.join(str(work_dir_path), f"output_{idx}.out")
+            output_name = os.path.basename(output_path)
+            cmd = _render_auto_parallel_command(
+                command=command,
+                exec_path=exec_path,
+                input_name=input_name,
                 output_name=output_name,
-                custom_command=cmd,
+            )
+            script_text = render_slurm_script(
+                exec_path=exec_path,
+                input_path=str(input_path),
+                output_path=str(output_path),
+                command_line=cmd,
+                tasks_per_node=parallel_np,
             )
             script_path = work_dir_path / f"slurm_job_{idx}.sh"
             script_content = f"{script_text.rstrip()}\n"
@@ -326,15 +303,30 @@ class SlurmLauncher:
                     print(f"[slurm][stderr]\n{completed.stderr}")
 
             retcodes.append(completed.returncode)
-            output_paths.append(os.path.join(str(work_dir_path), output_name))
+            output_paths.append(output_path)
 
         return retcodes, output_paths
 
 
-def _render_auto_parallel_command(command: str, input_name: str, output_name: str) -> str:
+def _render_auto_parallel_command(
+    *,
+    command: str,
+    exec_path: str,
+    input_name: str,
+    output_name: str,
+) -> str:
     cmd = command
-    if "{input_filename}" in cmd or "{output_filename}" in cmd:
-        cmd = cmd.replace("{input_filename}", input_name).replace("{output_filename}", output_name)
+    if "{exec_path}" in cmd:
+        cmd = cmd.replace("{exec_path}", "$exe")
+    cmd = cmd.replace(exec_path, "$exe")
+    if "{input_filename}" in cmd:
+        cmd = cmd.replace("{input_filename}", "$INPUT")
+    else:
+        cmd = cmd.replace(input_name, "$INPUT")
+    if "{output_filename}" in cmd:
+        cmd = cmd.replace("{output_filename}", "$OUTPUT")
+    else:
+        cmd = cmd.replace(output_name, "$OUTPUT")
     return cmd
 
 
