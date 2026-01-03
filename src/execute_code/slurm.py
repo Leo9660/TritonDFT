@@ -77,7 +77,7 @@ class SlurmLauncher:
                 raise RuntimeError("Slurm execution cancelled by user.")
 
             completed = subprocess.run(
-                ["bash", str(script_path)],
+                ["sbatch", "--wait", str(script_path)],
                 cwd=str(work_dir_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -198,7 +198,7 @@ class SlurmLauncher:
                 raise RuntimeError("Slurm probe execution cancelled by user.")
 
             completed = subprocess.run(
-                ["bash", str(script_path)],
+                ["sbatch", "--wait", str(script_path)],
                 cwd=str(work_dir_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -295,7 +295,7 @@ class SlurmLauncher:
                 raise RuntimeError("Slurm execution cancelled by user.")
 
             completed = subprocess.run(
-                ["bash", str(script_path)],
+                ["sbatch", "--wait", str(script_path)],
                 cwd=str(work_dir_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
