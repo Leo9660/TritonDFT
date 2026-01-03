@@ -1,10 +1,12 @@
+import os
+
 SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --partition=shared
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node={tasks_per_node}
 #SBATCH -t 1:00:00
-#SBATCH -o qe.out
-#SBATCH -e qe.err
+#SBATCH -o {log_out}
+#SBATCH -e {log_err}
 #SBATCH -p compute
 #SBATCH --export=ALL
 #SBATCH --account=TG-PHY250365
@@ -30,6 +32,7 @@ def render_slurm_script(
     output_path: str,
     command_line: str,
     tasks_per_node: int,
+    work_dir: str,
 ) -> str:
     return SLURM_TEMPLATE.format(
         exec_path=exec_path,
@@ -37,4 +40,6 @@ def render_slurm_script(
         output_path=output_path,
         command_line=command_line,
         tasks_per_node=tasks_per_node,
+        log_out=os.path.join(work_dir, "qe.out"),
+        log_err=os.path.join(work_dir, "qe.err"),
     ).rstrip()

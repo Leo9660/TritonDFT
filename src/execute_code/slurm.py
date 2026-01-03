@@ -65,6 +65,7 @@ class SlurmLauncher:
                 output_path=str(output_path),
                 command_line=f"mpirun -np {parallel_np} $exe -in $INPUT > $OUTPUT",
                 tasks_per_node=parallel_np,
+                work_dir=str(work_dir_path),
             )
             script_path = work_dir_path / f"slurm_job_{idx}.sh"
             script_content = f"{script_text.rstrip()}\n"
@@ -144,6 +145,7 @@ class SlurmLauncher:
             output_path=str(output_path),
             command_line=command_line,
             tasks_per_node=parallel_np if parallel_exec else 1,
+            work_dir=str(work_dir),
         )
 
     def _confirm_slurm_run(self) -> bool:
@@ -183,6 +185,7 @@ class SlurmLauncher:
                 output_path=str(probe_output),
                 command_line=f"mpirun -np {parallel_np} $exe -in $INPUT > $OUTPUT",
                 tasks_per_node=parallel_np,
+                work_dir=str(work_dir_path),
             )
 
             script_path = work_dir_path / f"slurm_probe_{idx}.sh"
@@ -280,6 +283,7 @@ class SlurmLauncher:
                 output_path=str(output_path),
                 command_line=cmd,
                 tasks_per_node=parallel_np,
+                work_dir=str(work_dir_path),
             )
             script_path = work_dir_path / f"slurm_job_{idx}.sh"
             script_content = f"{script_text.rstrip()}\n"
