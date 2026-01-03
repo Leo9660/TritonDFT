@@ -71,7 +71,7 @@ class SlurmLauncher:
             script_path.write_text(script_content, encoding="utf-8")
             script_path.chmod(0o755)
 
-            # print(f"[slurm] Generated script ({script_path}):\n{script_content}")
+            print(f"[slurm] Generated script ({script_path}):\n{script_content}")
             if not self._confirm_slurm_run():
                 raise RuntimeError("Slurm execution cancelled by user.")
 
@@ -286,6 +286,7 @@ class SlurmLauncher:
             script_path.write_text(script_content, encoding="utf-8")
             script_path.chmod(0o755)
 
+            print(f"[slurm] Generated script ({script_path}):\n{script_content}")
             if not self._confirm_slurm_run():
                 raise RuntimeError("Slurm execution cancelled by user.")
 
