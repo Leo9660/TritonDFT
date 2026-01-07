@@ -1,5 +1,5 @@
 # a unified generator adapter for HF, vLLM, and OpenAI ---
-from typing import Optional
+from typing import Optional, Tuple
 import os
 
 class UnifiedGenerator:
@@ -33,6 +33,11 @@ class UnifiedGenerator:
         self.seed = seed
         self.verbose = verbose
         self.model = model
+        self.total_prompt_tokens = 0
+        self.total_output_tokens = 0
+        self.last_prompt_tokens = 0
+        self.last_output_tokens = 0
+        self._tokenizer = None
 
         if self.backend == "hf":
             from transformers import pipeline
@@ -42,6 +47,7 @@ class UnifiedGenerator:
                 device_map=hf_device_map,
                 dtype=hf_dtype,
             )
+            self._tokenizer = getattr(self.pipe, "tokenizer", None)
             if self.verbose:
                 print(f"[UnifiedGenerator] Using HF transformers pipeline @ {model}")
 
@@ -62,6 +68,10 @@ class UnifiedGenerator:
             self.LLM = LLM
             self.SamplingParams = SamplingParams
             self.llm = LLM(**init_kwargs)
+            try:
+                self._tokenizer = self.llm.get_tokenizer()
+            except Exception:
+                self._tokenizer = None
 
             if self.verbose:
                 print(f"[UnifiedGenerator] Using vLLM @ {model} "
@@ -92,7 +102,7 @@ class UnifiedGenerator:
         max_new_tokens = max_new_tokens or self.default_max_new_tokens
 
         if self.backend == "hf":
-            return self.pipe(
+            out = self.pipe(
                 prompt,
                 max_new_tokens=max_new_tokens,
                 return_full_text=return_full_text,
@@ -100,6 +110,9 @@ class UnifiedGenerator:
                 temperature=self.temperature,
                 top_p=self.top_p,
             )
+            text = out[0].get("generated_text", "") if out else ""
+            self._update_token_counts(prompt, text)
+            return out
 
         elif self.backend == "vllm":
             sp = self.SamplingParams(
@@ -111,6 +124,7 @@ class UnifiedGenerator:
             outs = self.llm.generate([prompt], sp)
             o = outs[0]
             text = o.outputs[0].text if o.outputs else ""
+            self._update_token_counts(prompt, text)
             return [{"generated_text": text}]
 
         elif self.backend == "openai":
@@ -121,6 +135,7 @@ class UnifiedGenerator:
                 max_output_tokens=max_new_tokens,
                 # seed=self.seed,
             )
+            usage = getattr(resp, "usage", None)
             text = getattr(resp, "output_text", None)
             if text is None:
                 try:
@@ -132,6 +147,51 @@ class UnifiedGenerator:
                     text = "".join(parts) if parts else ""
                 except Exception:
                     text = ""
+            self._update_token_counts(prompt, text, usage=usage)
             return [{"generated_text": text}]
         else:
             raise ValueError(f"Unknown backend: {self.backend}. Use 'hf', 'vllm', or 'openai'.")
+
+    def reset_token_counters(self) -> None:
+        self.total_prompt_tokens = 0
+        self.total_output_tokens = 0
+        self.last_prompt_tokens = 0
+        self.last_output_tokens = 0
+
+    def _update_token_counts(self, prompt: str, output: str, usage: Optional[object] = None) -> None:
+        prompt_tokens, output_tokens = self._count_tokens(prompt, output, usage=usage)
+        self.last_prompt_tokens = prompt_tokens
+        self.last_output_tokens = output_tokens
+        self.total_prompt_tokens += prompt_tokens
+        self.total_output_tokens += output_tokens
+
+    def _count_tokens(
+        self,
+        prompt: str,
+        output: str,
+        usage: Optional[object] = None,
+    ) -> Tuple[int, int]:
+        if usage is not None:
+            prompt_tokens = getattr(usage, "prompt_tokens", None)
+            output_tokens = getattr(usage, "completion_tokens", None)
+            if prompt_tokens is not None and output_tokens is not None:
+                return int(prompt_tokens), int(output_tokens)
+        prompt_tokens = self._count_tokens_text(prompt)
+        output_tokens = self._count_tokens_text(output)
+        return prompt_tokens, output_tokens
+
+    def _count_tokens_text(self, text: str) -> int:
+        if not text:
+            return 0
+        if self._tokenizer is not None:
+            try:
+                return len(self._tokenizer.encode(text))
+            except Exception:
+                pass
+        try:
+            import tiktoken
+
+            enc = tiktoken.encoding_for_model(self.model)
+            return len(enc.encode(text))
+        except Exception:
+            return len(text.split())

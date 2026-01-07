@@ -1,7 +1,7 @@
 {
   "name": "vc_relax",
   "description": "Variable-cell relaxations that verify whether the agent can return consistent relaxed structures.",
-  "prompt_template": "For {material_context}, perform a variable-cell relaxation (vc-relax) calculation. Set the convergence criteria as etot_conv_thr = 1.0e-8, forc_conv_thr = 1.0e-7, and conv_thr = 1.0e-8. Use an automatic Monkhorst-Pack grid, make a reasonable educated guess for ecutwfc and the k-point sampling, use a half-shifted grid, and return the fully relaxed structure (atomic parameters).\n{pseudopotential_text}\n{parameter_text}",
+  "prompt_template": "For {material_context}, perform a variable-cell relaxation (vc-relax) calculation. {parameter_context}. {pseudopotential_text}. Return the fully relaxed structure (atomic parameters).",
   "required_ground_truth": [
     "relaxed_structure"
   ],

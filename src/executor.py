@@ -23,6 +23,7 @@ def run_qe_inputs(
     auto_parallel_generator: Optional[Callable[[str], List[dict]]] = None,
     max_new_tokens: int = 1024,
     hardware_description: Optional[str] = None,
+    auto_confirm: bool = False,
 ) -> Tuple[List[int], List[str]]:
     """
     Execute QE inputs sequentially using the selected execution mode.
@@ -48,7 +49,7 @@ def run_qe_inputs(
                         raise RuntimeError(f"Auto-parallel command missing for input {idx}.")
                     if verbose:
                         print(f"[auto_parallel] Running recommended command for input {idx}: {command}")
-                    if not _confirm_auto_parallel_run():
+                    if not _confirm_auto_parallel_run(auto_confirm):
                         raise RuntimeError("Auto-parallel execution cancelled by user.")
                     out_path = os.path.join(work_dir, f"output_{idx}.out")
                     run_codes, run_outputs = run_with_mpirun(
@@ -84,7 +85,10 @@ def run_qe_inputs(
         raise ValueError(f"Unknown run mode: {run_mode}")
 
 
-def _confirm_auto_parallel_run() -> bool:
+def _confirm_auto_parallel_run(auto_confirm: bool) -> bool:
+    if auto_confirm:
+        print("[auto_parallel] Auto-confirm enabled, proceeding with execution.")
+        return True
     print("should I run this? (type 'yes' to confirm): ", end="")
     try:
         answer = input().strip().lower()

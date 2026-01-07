@@ -17,6 +17,31 @@ def _format_parameter_block(parameters: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _parameter_context(parameters: Dict[str, Any]) -> str:
+    """Build the parameter instruction sentence for prompts."""
+    parameter_list = [
+        ("etot_conv_thr", "etot_conv_thr"),
+        ("forc_conv_thr", "forc_conv_thr"),
+        ("conv_thr", "conv_thr"),
+        ("ecutwfc", "ecutwfc"),
+        ("kpoint_sampling", "k-point sampling"),
+    ]
+    grid_shift = parameters.get("grid_shift", "half-shifted")
+
+    missing = []
+    parts = ["Set"]
+    for key, label in parameter_list:
+        value = parameters.get(key)
+        if value is None:
+            missing.append(label)
+            continue
+        parts.append(f"{label}={value},")
+    parts.append(f"use a {grid_shift} grid")
+
+    guess_text = ", ".join(missing) if missing else "none"
+    return " ".join(parts) + f", make a educated guess for {guess_text}"
+
+
 @dataclass
 class DataItem:
     """Structured benchmark record returned to downstream evaluation."""
@@ -75,16 +100,20 @@ def _material_query_context(info: Dict[str, Any]) -> str:
         lattice_text = ", ".join(f"{axis} = {value} Å" for axis, value in lattice.items())
     else:
         lattice_text = "not specified"
+    # return (
+    #     f"material = {name} with space group {space_group} and structure = {structure} "
+    #     f"using the {cell_type}, lattice constant(s) = {lattice_text}"
+    # )
+    # we no longer give lattice constant in the query to avoid confusion
     return (
         f"material = {name} with space group {space_group} and structure = {structure} "
-        f"using the {cell_type}, lattice constant(s) = {lattice_text}"
+        f"using the {cell_type}"
     )
 
-
 _PSEUDOPOTENTIAL_GUIDANCE = {
-    "LDA": "Use norm-conserving pseudopotentials generated within the LDA.",
-    "PBE": "Use PAW or ultrasoft pseudopotentials compatible with PBE.",
-    "PBE_SOL": "Use pseudopotentials generated with the PBEsol functional and keep them consistent across all species.",
+    "LDA": "Use norm-conserving pseudopotentials generated within the LDA",
+    "PBE": "Use PAW or ultrasoft pseudopotentials compatible with PBE",
+    "PBE_SOL": "Use pseudopotentials generated with the PBEsol functional and keep them consistent across all species",
 }
 
 
@@ -106,16 +135,24 @@ class MaterialRecord:
     id: str
     info: Dict[str, Any]
     parameters: Dict[str, Any]
+    common_parameters: Dict[str, Any]
     ground_truth: Dict[str, Any]
     metadata: Dict[str, Any]
     source_path: Path
 
     @classmethod
-    def from_payload(cls, payload: Dict[str, Any], *, source_path: Path) -> "MaterialRecord":
+    def from_payload(
+        cls,
+        payload: Dict[str, Any],
+        *,
+        source_path: Path,
+        common_parameters: Optional[Dict[str, Any]] = None,
+    ) -> "MaterialRecord":
         return cls(
             id=payload.get("id") or payload.get("info", {}).get("name") or "material",
             info=payload.get("info", {}) or {},
             parameters=payload.get("parameters", {}) or {},
+            common_parameters=common_parameters or {},
             ground_truth=payload.get("ground_truth", {}) or {},
             metadata=payload.get("metadata", {}) or {},
             source_path=source_path,
@@ -166,7 +203,12 @@ class BenchmarkDataset:
         simple_materials.json
     """
 
-    def __init__(self, data_root: Optional[Path] = None):
+    def __init__(
+        self,
+        data_root: Optional[Path] = None,
+        difficulty: str = "all",
+        task_type: str = "all",
+    ):
         package_root = Path(__file__).resolve().parent
         self.base_dir = Path(data_root or package_root)
         self.questions_dir = self.base_dir / "questions"
@@ -175,13 +217,26 @@ class BenchmarkDataset:
             raise FileNotFoundError(f"Questions directory missing: {self.questions_dir}")
         if not self.materials_dir.exists():
             raise FileNotFoundError(f"Materials directory missing: {self.materials_dir}")
+        if difficulty not in {"simple", "intermediate", "complex", "all"}:
+            raise ValueError("difficulty must be one of {'simple','intermediate','complex','all'}.")
+        if task_type not in {"vcrelax", "all"}:
+            raise ValueError("task_type must be one of {'vcrelax','all'}.")
+        self.difficulty = difficulty
+        self.task_type = task_type
         self._templates = self._load_templates()
         self._materials = self._load_materials()
 
     def _load_templates(self) -> Dict[str, TaskTemplate]:
+        task_type_map = {
+            "vcrelax": {"vc_relax"},
+            "all": None,
+        }
+        allowed = task_type_map.get(self.task_type)
         templates: Dict[str, TaskTemplate] = {}
         for manifest in sorted(self.questions_dir.glob("*.json")):
             template = TaskTemplate.from_json(manifest)
+            if allowed is not None and template.name not in allowed:
+                continue
             templates[template.name] = template
         if not templates:
             raise RuntimeError(f"No task templates found under {self.questions_dir}")
@@ -189,18 +244,29 @@ class BenchmarkDataset:
 
     def _load_materials(self) -> Dict[str, MaterialRecord]:
         materials: Dict[str, MaterialRecord] = {}
-        for path in sorted(self.materials_dir.rglob("*.json")):
+        if self.difficulty == "all":
+            material_paths = sorted(self.materials_dir.rglob("*.json"))
+        else:
+            material_paths = sorted(self.materials_dir.rglob(f"{self.difficulty}_materials.json"))
+        for path in material_paths:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(payload, dict) and "materials" in payload:
                 entries = payload["materials"]
+                common_parameters = payload.get("common_parameter", {}) or {}
             elif isinstance(payload, list):
                 entries = payload
+                common_parameters = {}
             elif isinstance(payload, dict):
                 entries = [payload]
+                common_parameters = {}
             else:
                 raise ValueError(f"Unsupported material format in {path}")
             for entry in entries:
-                record = MaterialRecord.from_payload(entry, source_path=path)
+                record = MaterialRecord.from_payload(
+                    entry,
+                    source_path=path,
+                    common_parameters=common_parameters,
+                )
                 if record.id in materials:
                     raise ValueError(f"Duplicated material id '{record.id}' at {path}")
                 materials[record.id] = record
@@ -243,6 +309,7 @@ class BenchmarkDataset:
             for material in self._materials.values():
                 parameters = {
                     **template.default_parameters,
+                    **material.common_parameters,
                     **material.parameters,
                     **merged_override,
                 }
@@ -250,6 +317,7 @@ class BenchmarkDataset:
                     material_summary=material.summary(),
                     material_context=material.query_context(),
                     parameter_text=_format_parameter_block(parameters),
+                    parameter_context=_parameter_context(parameters),
                     pseudopotential_text=pseudo_text,
                 ).strip()
                 ground_truth = dict(material.ground_truth)
