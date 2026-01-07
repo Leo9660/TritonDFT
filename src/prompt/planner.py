@@ -18,7 +18,7 @@ planner_messages = {
 
     Core rules:
     1) If key structural information (e.g., lattice constant) is already provided, do NOT add a sweep.  
-    2) If key information is missing or uncertain, solve it by sweeping the parameter (use as few points as possible, e.g. 3–5).  
+    2) If key information is missing or uncertain, solve it by sweeping the parameter (use as few points as possible, e.g. 3-5).  
     3) Allowed tools: pw_scf, pw_nscf, pw_relax, pw_vc_relax, pw_bands, bands_post, dos_post, projwfc_post, pp_post, q2r_post, matdyn_post.
 
     <|user|>

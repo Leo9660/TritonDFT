@@ -1,6 +1,7 @@
 import re, ast
 from typing import Dict, Any, List, Optional
 from mp_api.client import MPRester
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 
 # ---------- Helper extraction functions ----------
@@ -30,7 +31,7 @@ def _extract_list(snippet: str, key: str) -> Optional[List[Any]]:
 
 # ---------- Core function ----------
 
-def fetch_initial_structures_from_api_snippet(snippet: str, limit: int = 25, verbose: bool = False) -> Dict[str, Dict[str, Any]]:
+def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose: bool = False) -> Dict[str, Dict[str, Any]]:
     """
     Parse an MP API query snippet (e.g. 'mpr.materials.summary.search(formula="BaTiO3", spacegroup_symbol="P4mm")'),
     execute the query to obtain material IDs, then fetch their corresponding initial structures.
@@ -129,13 +130,36 @@ def fetch_initial_structures_from_api_snippet(snippet: str, limit: int = 25, ver
     result["initial_structures"].append(init_list[min_id][min_subid])
     result["relaxed_structures"].append(relaxed_lookup.get(mid)[min_subid])
 
+    gt = {}
+    try:
+        s = relaxed_lookup.get(min_id)
+        if s is not None:
+            lat = s.lattice
+            gt["a"] = lat.a
+            gt["b"] = lat.b
+            gt["c"] = lat.c
+            gt["alpha"] = lat.alpha
+            gt["beta"] = lat.beta
+            gt["gamma"] = lat.gamma
+            try:
+                sga = SpacegroupAnalyzer(s, symprec=1e-3, angle_tolerance=5)
+                gt["space_group"] = sga.get_space_group_symbol()
+                gt["space_group_number"] = sga.get_space_group_number()
+                gt["point_group"] = sga.get_point_group_symbol()
+                gt["crystal_system"] = sga.get_crystal_system()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    result["ground_truth"] = gt
+
     return result
 
 # ---------- Example usage inside main() ----------
 
 def main():
     snippet = 'mpr.materials.summary.search(formula="BaTiO3", spacegroup_symbol="P4mm")'
-    out = fetch_initial_structures_from_api_snippet(snippet, limit=5)
+    out = fetch_material_info_from_api_snippet(snippet, limit=5)
 
     for mid, payload in out.items():
         print(f"\n================= {mid} =================")

@@ -39,13 +39,12 @@ Based on the inputs above:
 - Ensure all constraints are satisfied (e.g., nd is a perfect square and ≤ ranks per pool).
 
 # Output format (STRICT)
-Output exactly ONE line and nothing else:
+Output exactly ONE following line and nothing else.
 
 export OMP_NUM_THREADS=<int>; mpirun --allow-run-as-root -np <int> {exec_path} [QE parallel flags] -in {input_filename} | tee {output_filename}
 
 Rules:
-- The command must be on a single line.
-- Omit any QE flag that you do not use (do not set unused flags to 1).
-- Do not include explanations, markdown, or extra text.
+- The command must be on a single line. You should not output any thinking or reasoning steps.
+- Do not render anything in markdown format. Just output the raw text.
 """
 

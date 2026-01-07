@@ -1,7 +1,7 @@
 {
   "materials": [
     {
-      "id": "silicon_diamond",
+      "id": "0",
       "info": {
         "name": "Silicon",
         "formula": "Si",
@@ -12,14 +12,18 @@
           "a": 5.43
         }
       },
-      "parameters": {},
+      "parameters": {
+        "etot_conv_thr": "1.0e-8",
+        "forc_conv_thr": "1.0e-7",
+        "conv_thr": "1.0e-8"
+      },
       "ground_truth": {
         "relaxed_structure": null
       },
       "metadata": {}
     },
     {
-      "id": "aluminum_fcc",
+      "id": "1",
       "info": {
         "name": "Aluminum",
         "formula": "Al",
@@ -30,7 +34,11 @@
           "a": 4.05
         }
       },
-      "parameters": {},
+      "parameters": {
+        "etot_conv_thr": "1.0e-8",
+        "forc_conv_thr": "1.0e-7",
+        "conv_thr": "1.0e-8"
+      },
       "ground_truth": {
         "relaxed_structure": null,
         "total_energy_ev_per_fu": -3.74
@@ -38,7 +46,7 @@
       "metadata": {}
     },
     {
-      "id": "iron_bcc",
+      "id": "2",
       "info": {
         "name": "Iron",
         "formula": "Fe",
@@ -49,14 +57,18 @@
           "a": 2.87
         }
       },
-      "parameters": {},
+      "parameters": {
+        "etot_conv_thr": "1.0e-8",
+        "forc_conv_thr": "1.0e-7",
+        "conv_thr": "1.0e-8"
+      },
       "ground_truth": {
         "relaxed_structure": null
       },
       "metadata": {}
     },
     {
-      "id": "nacl_rocksalt",
+      "id": "3",
       "info": {
         "name": "Sodium Chloride",
         "formula": "NaCl",
@@ -67,14 +79,18 @@
           "a": 5.64
         }
       },
-      "parameters": {},
+      "parameters": {
+        "etot_conv_thr": "1.0e-8",
+        "forc_conv_thr": "1.0e-7",
+        "conv_thr": "1.0e-8"
+      },
       "ground_truth": {
         "relaxed_structure": null
       },
       "metadata": {}
     },
     {
-      "id": "gaas_zincblende",
+      "id": "4",
       "info": {
         "name": "Gallium Arsenide",
         "formula": "GaAs",
@@ -85,14 +101,18 @@
           "a": 5.65
         }
       },
-      "parameters": {},
+      "parameters": {
+        "etot_conv_thr": "1.0e-8",
+        "forc_conv_thr": "1.0e-7",
+        "conv_thr": "1.0e-8"
+      },
       "ground_truth": {
         "relaxed_structure": null
       },
       "metadata": {}
     },
     {
-      "id": "mgo_rocksalt",
+      "id": "5",
       "info": {
         "name": "Magnesium Oxide",
         "formula": "MgO",
@@ -103,14 +123,18 @@
           "a": 4.21
         }
       },
-      "parameters": {},
+      "parameters": {
+        "etot_conv_thr": "1.0e-8",
+        "forc_conv_thr": "1.0e-7",
+        "conv_thr": "1.0e-8"
+      },
       "ground_truth": {
         "relaxed_structure": null
       },
       "metadata": {}
     },
     {
-      "id": "graphene_hexagonal",
+      "id": "6",
       "info": {
         "name": "Graphene",
         "formula": "C",
@@ -121,14 +145,18 @@
           "a": 2.46
         }
       },
-      "parameters": {},
+      "parameters": {
+        "etot_conv_thr": "1.0e-8",
+        "forc_conv_thr": "1.0e-7",
+        "conv_thr": "1.0e-8"
+      },
       "ground_truth": {
         "relaxed_structure": null
       },
       "metadata": {}
     },
     {
-      "id": "graphite_ab",
+      "id": "7",
       "info": {
         "name": "Graphite (AB)",
         "formula": "C",
@@ -137,14 +165,21 @@
         "cell_type": "conventional cell",
         "lattice_constants_angstrom": {
           "a": 2.46,
-          "c": 6.70
+          "c": 6.7
         }
       },
-      "parameters": {},
+      "parameters": {
+        "etot_conv_thr": "1.0e-8",
+        "forc_conv_thr": "1.0e-7",
+        "conv_thr": "1.0e-8"
+      },
       "ground_truth": {
         "total_energy_ev_per_fu": -9.22
       },
       "metadata": {}
     }
-  ]
+  ],
+  "common_parameter": {
+    "kpoint_sampling": "6"
+  }
 }

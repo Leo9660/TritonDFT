@@ -5,16 +5,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import os
 import datetime
+import time
 
 from prompt import get_prompt
 from prompt.tool_requirements import get_parse_requirement, get_pw_requirement
 from config import Config
 from generator import UnifiedGenerator
 from execute_code.slurm import SlurmLauncher
-from tool import get_spec, fetch_initial_structures_from_api_snippet
+from tool import get_spec, fetch_material_info_from_api_snippet
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
 parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file
 from executor import run_qe_inputs
+from evaluate.compare import compare_evaluation
 
 class DFTAgent:
     """
@@ -41,8 +43,10 @@ class DFTAgent:
         parallel_exec: bool = False,
         parallel_np: int = 1,
         run_mode: str = "mpirun", # "mpirun", "local", "slurm"
-        slurm_auto_confirm: bool = False, # whether the Slurm job submission is bypassing human confirmation, False stands for manual confirmation
+        auto_confirm: bool = False, # whether job submission is bypassing human confirmation
         hardware_description: Optional[str] = None,
+        benchmark: bool = False,
+        benchmark_file: str = "benchmark.csv",
         evaluation_mode: bool = False, # Evaluate results of each subproblem
         output_log: bool = False,
         output_log_file: str = "dft_agent_log.txt",
@@ -67,11 +71,13 @@ class DFTAgent:
         self.parallel_exec = parallel_exec
         self.parallel_np = parallel_np
         self.hardware_description = hardware_description
+        self.benchmark = benchmark
+        self.benchmark_file = benchmark_file
         valid_run_modes = {"mpirun", "local", "slurm"}
         if run_mode not in valid_run_modes:
             raise ValueError(f"run_mode must be one of {valid_run_modes}.")
         self.run_mode = run_mode
-        self.slurm_auto_confirm = slurm_auto_confirm
+        self.auto_confirm = auto_confirm
         self.pseudo_dirs = self.config.pseudo
         self.pseudo_dir = self.config.pseudo.PBE
         self.qe_bin_prefix = self.config.qe_bin_dir
@@ -94,7 +100,7 @@ class DFTAgent:
             generator=self.generator,
             max_new_tokens=self.max_new_tokens,
             verbose=self.verbose,
-            auto_confirm=self.slurm_auto_confirm,
+            auto_confirm=self.auto_confirm,
         )
 
         # Tool setup params
@@ -144,7 +150,7 @@ class DFTAgent:
         if self.verbose:
             print(f"[info_query] API call snippet received: {api_call_snippet_out}")
 
-        fetch_result = fetch_initial_structures_from_api_snippet(api_call_snippet_out, limit=25, verbose=self.verbose)
+        fetch_result = fetch_material_info_from_api_snippet(api_call_snippet_out, limit=25, verbose=self.verbose)
     
         if self.output_log:
             output_to_log_file(self.work_dir_root, self.output_log_file, f"[info_query] Retrieved material information: {fetch_result['material_ids'][0]}")
@@ -215,6 +221,9 @@ class DFTAgent:
 
         total_result_json = ""
         error_code = ""
+        script_gen_time = 0.0
+        parse_validate_time = 0.0
+        dft_run_time = 0.0
 
         if self.verbose and total_memory != "":
             print(f"[solve_sub_problem] Previous memory received: {total_memory}")
@@ -255,12 +264,14 @@ class DFTAgent:
 
             # print("[debug] script prompt content:", script_prompt[0]['content'])
 
+            script_gen_start = time.perf_counter()
             script_out = self.generator(script_prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
             if self.verbose:
                 print(f"[solve_sub_problem] Script of tool call received: {script_out[0]['generated_text']}")
 
             generated = script_out[0]['generated_text']
             scripts = parse_scripts_block(generated)
+            script_gen_time += time.perf_counter() - script_gen_start
 
             # work_dir setting
             work_dir = self.work_dir
@@ -294,6 +305,7 @@ class DFTAgent:
 
             # execute qe
             qe_prefix = get_qe_prefix(self)
+            dft_run_start = time.perf_counter()
             retcodes, output_paths = run_qe_inputs(
                 exec_name=fn_spec.exec,
                 qe_prefix=qe_prefix,
@@ -308,12 +320,15 @@ class DFTAgent:
                 slurm_launcher=self.slurm_launcher.launch if self.run_mode == "slurm" else None,
                 auto_parallel_generator=self.generator,
                 max_new_tokens=self.max_new_tokens,
+                auto_confirm=self.auto_confirm,
             )
+            dft_run_time += time.perf_counter() - dft_run_start
 
             input_list, output_list = get_qe_result(work_dir=work_dir, input_paths=input_paths, verbose=self.verbose)
             output_list = preprocess_output_list(output_list, verbose=self.verbose)
 
             # Parse the output results
+            parse_validate_start = time.perf_counter()
             for i, (input_file, output_file) in enumerate(zip(input_list, output_list)):
                 parse_requirement = get_parse_requirement(fn_spec.parse_requirement_key)
                 messages = get_prompt(prompt_type="result_parse", input_json=params_json,
@@ -343,16 +358,19 @@ class DFTAgent:
                     print(f"[solve_sub_problem] Finished: {subproblem['problem']}")
                 break  # Exit the while loop if successful
             # error when two many iterations
-            elif loop_time > 5:
+            elif loop_time > 3:
                 raise ValueError("Could not solve the subproblem!")
             else:
                 params_json = json.dumps(judge_json["new_param_guess"])
                 error_code += judge_out[0]['generated_text']
                 if self.verbose:
                     print(f"[solve_sub_problem] new parameter output received: {params_json}")
+            parse_validate_time += time.perf_counter() - parse_validate_start
 
         # Evaluate the output result
+        eval_result = None
         if self.evaluation_mode:
+            validation_start = time.perf_counter()
             for i, (input_path, output_path) in enumerate(zip(input_paths, output_paths)):
                 if hasattr(fn_spec, "eval_func") and fn_spec.eval_func is not None:
                     eval_result = fn_spec.eval_func(input_path, output_path)
@@ -365,6 +383,7 @@ class DFTAgent:
                     input_str = Path(input_path).read_text()
                     output_to_log_file(self.work_dir_root, self.output_log_file, f"[Input Structure] {i}:\n{input_str}\n")
                     output_to_log_file(self.work_dir_root, self.output_log_file, f"[Output Evaluation] {i}:\n {eval_result}")
+            parse_validate_time += time.perf_counter() - validation_start
 
 
         # Placeholder for actual execution logic
@@ -372,7 +391,13 @@ class DFTAgent:
             "status": "success",
             "result_json": f"{total_result_json}",
             "result_judge": f"{judge_out[0]['generated_text']}",
-            "details": f"Executed {subproblem['tool']}!"
+            "details": f"Executed {subproblem['tool']}!",
+            "timing": {
+                "script_gen_s": script_gen_time,
+                "parse_validate_s": parse_validate_time,
+                "dft_run_s": dft_run_time,
+            },
+            "evaluation": eval_result,
         }
         return result
 
@@ -381,13 +406,23 @@ class DFTAgent:
             return get_pw_requirement(self.pseudo_dirs)
         return ""
 
-    def run(self, query: str) -> Any:
+    def run(
+        self,
+        query: str,
+        run_id: int = 0,
+        difficulty: str = "simple",
+        task_type: str = "",
+        material_name: str = "",
+    ) -> Any:
         """
         Main entry point: run the full workflow for a user query.
         1) Plan
         2) Execute each step (mocked here)
         3) Parse & aggregate results (mocked here)
         """
+        if self.benchmark and hasattr(self.generator, "reset_token_counters"):
+            self.generator.reset_token_counters()
+        run_start = time.perf_counter()
         self._prepare_run_directory()
         if self.verbose:
             print(f"[run] Starting workflow for query: {query}")
@@ -397,10 +432,13 @@ class DFTAgent:
             
         # 0) Query material information (Material Project)
         initial_structures = None
+        material_info = None
+        info_query_time = 0.0
         if self.need_query_info:
+            info_start = time.perf_counter()
             material_info = self.info_query(query)
-            # comment: This is a temporary solution, need to be fixed later
             initial_structures = material_info['initial_structures']
+            info_query_time = time.perf_counter() - info_start
             
             if self.verbose:
                 print("[run] Initial structures obtained from Material Project.")
@@ -413,15 +451,58 @@ class DFTAgent:
             return None
 
         total_memory = ""
+        total_script_time = 0.0
+        total_parse_validate_time = 0.0
+        total_dft_time = 0.0
 
         # 2) Execute each step
+        last_sub_problem_res = None
         for i, step in enumerate(subproblems):
             if self.verbose:
                 print(f"[run] Executing step {i+1}/{len(subproblems)}: {step['problem']}")
             
             # try:
             sub_problem_res = self.solve_sub_problem(step, problem_id=i+1, query=query, total_memory=total_memory, initial_structures=initial_structures)
+            last_sub_problem_res = sub_problem_res
             if self.verbose:
                 print(f"[run] Subproblem {i+1} solved!")
+            timing = sub_problem_res.get("timing", {})
+            total_script_time += timing.get("script_gen_s", 0.0)
+            total_parse_validate_time += timing.get("parse_validate_s", 0.0)
+            total_dft_time += timing.get("dft_run_s", 0.0)
             total_memory += f" Subproblem {i+1}:\n System Results:\n {sub_problem_res['result_json']} \n"
             total_memory += f" Conculsion of Subproblem {i+1}: {sub_problem_res['result_judge']} \n\n"
+
+        if self.benchmark:
+            prompt_tokens = getattr(self.generator, "total_prompt_tokens", 0)
+            output_tokens = getattr(self.generator, "total_output_tokens", 0)
+            total_run_time = time.perf_counter() - run_start
+            ground_truth = {}
+            if material_info and isinstance(material_info.get("ground_truth"), dict):
+                ground_truth = material_info.get("ground_truth", {})
+            if self.verbose:
+                print(f"[benchmark] Ground truth: {ground_truth}")
+            evaluation = {}
+            if last_sub_problem_res and isinstance(last_sub_problem_res.get("evaluation"), dict):
+                evaluation = last_sub_problem_res.get("evaluation", {})
+            max_rel_error, all_exact_match = compare_evaluation(ground_truth, evaluation)
+            if self.verbose:
+                print(f"[benchmark] Max relative error: {max_rel_error}")
+                print(f"[benchmark] Exact match all-true: {all_exact_match}")
+            benchmark_path = Path(self.benchmark_file)
+            benchmark_path.parent.mkdir(parents=True, exist_ok=True)
+            header = (
+                "run_id,difficulty,task_type,material_name,prompt_tokens,output_tokens,"
+                "total_run_time,info_query_time,total_dft_time,total_script_time,"
+                "total_parse_validate_time,max_rel_error,all_exact_match\n"
+            )
+            need_header = not benchmark_path.exists() or benchmark_path.stat().st_size == 0
+            with open(benchmark_path, "a", encoding="utf-8") as f:
+                if need_header:
+                    f.write(header)
+                f.write(
+                    f"{run_id},{difficulty},{task_type},{material_name},{prompt_tokens},{output_tokens},"
+                    f"{total_run_time:.6f},{info_query_time:.6f},{total_dft_time:.6f},"
+                    f"{total_script_time:.6f},{total_parse_validate_time:.6f},"
+                    f"{max_rel_error},{all_exact_match}\n"
+                )
