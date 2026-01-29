@@ -62,8 +62,8 @@ Refer to the QE documentation in `Doc/`, the package-specific `*/Doc/` folders, 
 ## [Optional] Deploy Backend in Dokcer
 ```
 docker run -it -v $(pwd):/workspace  \
--e OPENAI_API_KEY=***REMOVED-OPENAI-KEY*** \
--e MP_API_KEY=***REMOVED-MP-KEY*** \
+-e OPENAI_API_KEY=sk-proj-xxx \
+-e MP_API_KEY=xxx \
 --name triton-dft-lyc -p 8000:8000 triton-dft /bin/bash
 
 docker start -ai triton-dft-lyc
