@@ -1,0 +1,127 @@
+{
+  "category": "Metal",
+  "materials": [
+    {
+      "id": "0",
+      "info": {
+        "formula": "Li",
+        "structure": "bcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Im-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "info": {
+        "formula": "Na",
+        "structure": "bcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Im-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "info": {
+        "formula": "K",
+        "structure": "bcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Im-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "3",
+      "info": {
+        "formula": "Al",
+        "structure": "fcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "4",
+      "info": {
+        "formula": "Cu",
+        "structure": "fcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "5",
+      "info": {
+        "formula": "Ag",
+        "structure": "fcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "6",
+      "info": {
+        "formula": "Au",
+        "structure": "fcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "7",
+      "info": {
+        "formula": "Fe",
+        "structure": "bcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Im-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "8",
+      "info": {
+        "formula": "W",
+        "structure": "bcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Im-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "9",
+      "info": {
+        "formula": "Mo",
+        "structure": "bcc",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Im-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    }
+  ],
+  "common_parameter": {},
+  "schema_version": 1
+}

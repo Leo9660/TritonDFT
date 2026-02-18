@@ -27,6 +27,7 @@ class SlurmLauncher:
         parallel_np: int,
         auto_parallel: bool = False,
         hardware_description: Optional[str] = None,
+        output_paths: Optional[List[str]] = None,
     ) -> Tuple[List[int], List[str]]:
         work_dir_path = Path(work_dir)
         work_dir_path.mkdir(parents=True, exist_ok=True)
@@ -41,6 +42,7 @@ class SlurmLauncher:
                 parallel_exec=parallel_exec,
                 parallel_np=parallel_np,
                 hardware_description=hardware_description,
+                output_paths=output_paths,
             )
             if commands:
                 return self._run_auto_parallel_command(
@@ -52,13 +54,18 @@ class SlurmLauncher:
                     parallel_exec=parallel_exec,
                     parallel_np=parallel_np,
                     commands=commands,
+                    output_paths=output_paths,
                 )
 
         retcodes: List[int] = []
         output_paths: List[str] = []
 
         for idx, input_path in enumerate(input_paths, start=1):
-            output_path = os.path.join(str(work_dir_path), f"output_{idx}.out")
+            output_path = (
+                output_paths[idx - 1]
+                if output_paths and idx - 1 < len(output_paths)
+                else os.path.join(str(work_dir_path), f"output_{idx}.out")
+            )
             script_text = render_slurm_script(
                 exec_path=os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name,
                 input_path=str(input_path),
@@ -169,13 +176,17 @@ class SlurmLauncher:
         parallel_exec: bool,
         parallel_np: int,
         hardware_description: Optional[str],
+        output_paths: Optional[List[str]] = None,
     ) -> List[Optional[str]]:
         work_dir_path = Path(work_dir)
         probe_paths = [_create_probe_script(path) for path in input_paths]
-        probe_outputs = [
-            work_dir_path / f"output_{idx}_probe.out"
-            for idx in range(1, len(probe_paths) + 1)
-        ]
+        probe_outputs: List[Path] = []
+        for idx in range(1, len(probe_paths) + 1):
+            if output_paths and idx - 1 < len(output_paths):
+                base = Path(output_paths[idx - 1])
+                probe_outputs.append(base.with_name(f"{base.stem}_probe{base.suffix or '.out'}"))
+            else:
+                probe_outputs.append(work_dir_path / f"output_{idx}_probe.out")
         exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
 
         for idx, (probe_path, probe_output) in enumerate(zip(probe_paths, probe_outputs), start=1):
@@ -219,7 +230,10 @@ class SlurmLauncher:
         commands: List[Optional[str]] = []
         for idx, summary in enumerate(summaries, start=1):
             input_name = os.path.basename(input_paths[idx - 1]) if idx - 1 < len(input_paths) else ""
-            output_name = f"output_{idx}.out"
+            if output_paths and idx - 1 < len(output_paths):
+                output_name = os.path.basename(output_paths[idx - 1])
+            else:
+                output_name = f"output_{idx}.out"
             try:
                 input_script = Path(input_paths[idx - 1]).read_text()
             except OSError:
@@ -262,6 +276,7 @@ class SlurmLauncher:
         parallel_exec: bool,
         parallel_np: int,
         commands: List[Optional[str]],
+        output_paths: Optional[List[str]] = None,
     ) -> Tuple[List[int], List[str]]:
         work_dir_path = Path(work_dir)
         retcodes: List[int] = []
@@ -273,7 +288,11 @@ class SlurmLauncher:
             if not command:
                 raise RuntimeError(f"Auto-parallel command missing for input {idx}.")
             input_name = os.path.basename(input_path)
-            output_path = os.path.join(str(work_dir_path), f"output_{idx}.out")
+            output_path = (
+                output_paths[idx - 1]
+                if output_paths and idx - 1 < len(output_paths)
+                else os.path.join(str(work_dir_path), f"output_{idx}.out")
+            )
             output_name = os.path.basename(output_path)
             cmd = _render_auto_parallel_command(
                 command=command,

@@ -3,3 +3,4 @@ pseudo:
   LDA: /path/to/LDA_standard
   PBE: /path/to/PBE_standard
   PBEsol: /path/to/PBEsol_standard
+qe_bin_dir: /path/to/QuantumE/bin

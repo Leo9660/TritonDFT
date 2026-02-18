@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 from evaluate.relax_eval import run_relax_metrics, run_relax_metrics_input
 from evaluate.scf_eval import run_scf_metrics, run_scf_metrics_input
+from prompt.tool_requirements import get_bandsx_requirement, get_dosx_requirement, get_pw_requirement, get_ph_requirement, get_evx_requirement
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -47,6 +48,7 @@ ALLOWED_FNS: Set[str] = {
     "pp_post",
     "q2r_post",
     "matdyn_post",
+    "pw_phonon_gamma",
 }
 
 # ---- Canonical mapping from fn -> ToolSpec ----
@@ -70,6 +72,7 @@ FN_MAP: Dict[str, ToolSpec] = {
                   "structure", "structure_from"),
         description="Non-self-consistent run for DOS/bands preparation",
         requirement_key="pw",
+        parse_requirement_key="nscf",
     ),
     "pw_relax": ToolSpec(
         exec="pw.x",
@@ -96,7 +99,8 @@ FN_MAP: Dict[str, ToolSpec] = {
         required=(),
         optional=("kpath", "kpath_points", "ibrav", "structure", "structure_from"),
         description="Bands mode with pw.x (alternative to bands.x postprocessing)",
-        section="&control, &system, &electrons, ATOMIC_SPECIES, ATOMIC_POSITIONS, K_POINTS. If ibrav=0, also add CELL_PARAMETERS."
+        requirement_key="pw",
+        parse_requirement_key="pw_bands",
     ),
 
     # post-processing family
@@ -105,14 +109,16 @@ FN_MAP: Dict[str, ToolSpec] = {
         required=(),
         optional=("input_from", "plot", "emin", "emax"),
         description="Postprocess band structure after pw.x SCF/NSCF",
-        section="&bands (minimal). Reads band structure data from pw.x output."
+        requirement_key="bands",
+        parse_requirement_key="bandsx",
     ),
     "dos_post": ToolSpec(
         exec="dos.x",
         required=(),
         optional=("input_from", "emin", "emax", "delta_e"),
         description="Total DOS postprocessing",
-        section="&dos (minimal). Reads DOS data from pw.x SCF/NSCF output."
+        requirement_key="dos",
+        parse_requirement_key="dosx",
     ),
     "projwfc_post": ToolSpec(
         exec="projwfc.x",
@@ -141,6 +147,23 @@ FN_MAP: Dict[str, ToolSpec] = {
         optional=("asr", "dos", "q_in_cryst_coord", "q_path", "flfrc", "fldos", "flfrq"),
         description="Phonon frequencies / DOS along paths",
         section="&input (minimal). Reads real-space force constants from q2r.x output."
+    ),
+    "pw_phonon_gamma": ToolSpec(
+        exec="ph.x",
+        mode="gamma",
+        required=(),
+        optional=("tr2_ph", "prefix", "outdir", "fildyn", "asr", "recover", "ldisp", "nq1", "nq2", "nq3", "structure_from"),
+        description="Γ-point phonon stability check using DFPT (no Raman, no dispersion)",
+        requirement_key="ph",
+        parse_requirement_key="ph_gamma",
+    ),
+    "elastic_post": ToolSpec(
+        exec="ev.x",
+        required=(),
+        optional=("input_from",),
+        description="Calculate elastic constants and bulk modulus from vc-relax outputs",
+        requirement_key="evx",
+        parse_requirement_key="evx",
     ),
 }
 
@@ -193,3 +216,20 @@ def normalize_tool(tool: str) -> str:
     if t in {"qe", "quantum-espresso", "quantumespresso"}:
         return "quantum_espresso"
     return t or "quantum_espresso"
+
+
+def build_tool_requirements(fn_spec: ToolSpec, pseudo_dirs) -> str:
+    """
+    Map a tool's requirement key to its textual requirements.
+    """
+    if fn_spec.requirement_key == "pw":
+        return get_pw_requirement(pseudo_dirs)
+    if fn_spec.requirement_key == "bands":
+        return get_bandsx_requirement()
+    if fn_spec.requirement_key == "dos":
+        return get_dosx_requirement()
+    if fn_spec.requirement_key == "ph":
+        return get_ph_requirement()
+    if fn_spec.requirement_key == "evx":
+        return get_evx_requirement()
+    return ""

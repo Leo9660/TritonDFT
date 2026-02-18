@@ -45,9 +45,35 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
         kwargs["previous_memory"] = "\n ### Memory of previous subproblems\n" + str(pm) + "\n"
     # ----------------------------------------
     # --- inject header for initial_structures ---
-    qi = kwargs.get("initial_structures", "")
+    # qi = kwargs.get("initial_structures", "")
+    # if qi is not None and str(qi) != "":
+    #     kwargs["query_info"] = "\n ### ### Initial Structures. Use the following initial structures as the starting atomic configurations.\n" + str(qi) + "\n"
+    # else:
+    #     kwargs["query_info"] = ""
+    # We are using conventional structure info for now
+    # qi = kwargs.get("conventional_structure", "")
+    # if qi is not None and str(qi) != "":
+    #     kwargs["query_info"] = \
+    #     """
+    #     ### Initial Structures: Use the following CONVENTIONAL unit-cell structure as the starting atomic configuration.
+    #     - The provided structure is a conventional unit-cell representation.
+    #     - All lattice lengths are in angstrom (Å); lattice angles are in degrees.
+    #     - Atomic positions are fractional (crystal) coordinates with respect to the lattice vectors.
+    #     This structure should be used to construct Quantum ESPRESSO inputs.
+    #     """ + str(qi) + "\n"
+    # else:
+    #     kwargs["query_info"] = ""
+    # Now we are using primitive structure info
+    qi = kwargs.get("primitive_structure", "")
     if qi is not None and str(qi) != "":
-        kwargs["query_info"] = "\n ### ### Initial Structures. Use the following initial structures as the starting atomic configurations.\n" + str(qi) + "\n"
+        kwargs["query_info"] = \
+        """
+        ### Initial Structures: Use the following PRIMITIVE unit-cell structure as the starting atomic configuration.
+        - The provided structure is a primitive unit-cell representation.
+        - All lattice lengths are in angstrom (Å); lattice angles are in degrees.
+        - Atomic positions are fractional (crystal) coordinates with respect to the lattice vectors.
+        This structure should be used to construct Quantum ESPRESSO inputs.
+        """ + str(qi) + "\n"
     else:
         kwargs["query_info"] = ""
     # ----------------------------------------

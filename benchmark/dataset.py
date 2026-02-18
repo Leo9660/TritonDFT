@@ -26,7 +26,7 @@ def _parameter_context(parameters: Dict[str, Any]) -> str:
         ("ecutwfc", "ecutwfc"),
         ("kpoint_sampling", "k-point sampling"),
     ]
-    grid_shift = parameters.get("grid_shift", "half-shifted")
+    grid_shift = parameters.get("grid_shift", "gamma-centered grid")
 
     missing = []
     parts = ["Set"]
@@ -110,10 +110,21 @@ def _material_query_context(info: Dict[str, Any]) -> str:
         f"using the {cell_type}"
     )
 
+
+def _material_query_context2(info: Dict[str, Any]) -> str:
+    """Build a flat attribute=value context string from material info."""
+    if not info:
+        return "material=unknown"
+    parts = []
+    for key, value in info.items():
+        parts.append(f"{key}={value}")
+    return " ".join(parts)
+
+
 _PSEUDOPOTENTIAL_GUIDANCE = {
-    "LDA": "Use norm-conserving pseudopotentials generated within the LDA",
-    "PBE": "Use PAW or ultrasoft pseudopotentials compatible with PBE",
-    "PBE_SOL": "Use pseudopotentials generated with the PBEsol functional and keep them consistent across all species",
+    "LDA": "Use LDA pseudopotentials",
+    "PBE": "Use PBE pseudopotentials",
+    "PBE_SOL": "Use PBEsol pseudopotentials",
 }
 
 
@@ -162,7 +173,7 @@ class MaterialRecord:
         return _render_material_summary(self.info)
 
     def query_context(self) -> str:
-        return _material_query_context(self.info)
+        return _material_query_context2(self.info)
 
 
 @dataclass
@@ -199,14 +210,33 @@ class BenchmarkDataset:
     benchmark/
       questions/
         vc_relax.json
+        scf.json
+        nscf.json
+        ...
       materials/
-        simple_materials.json
+        metal_materials.json
+        semiconductor_materials.json
+        ...
     """
+
+    _CATEGORIES = {
+        "metal",
+        "semiconductor",
+        "insulator",
+        "topological",
+        "thermoelectric",
+        "piezoelectric",
+        "ferroelectric",
+        "magnetic",
+        "superconductor",
+        "optical",
+        "all",
+    }
 
     def __init__(
         self,
         data_root: Optional[Path] = None,
-        difficulty: str = "all",
+        category: str = "all",
         task_type: str = "all",
     ):
         package_root = Path(__file__).resolve().parent
@@ -217,37 +247,44 @@ class BenchmarkDataset:
             raise FileNotFoundError(f"Questions directory missing: {self.questions_dir}")
         if not self.materials_dir.exists():
             raise FileNotFoundError(f"Materials directory missing: {self.materials_dir}")
-        if difficulty not in {"simple", "intermediate", "complex", "all"}:
-            raise ValueError("difficulty must be one of {'simple','intermediate','complex','all'}.")
-        if task_type not in {"vcrelax", "all"}:
-            raise ValueError("task_type must be one of {'vcrelax','all'}.")
-        self.difficulty = difficulty
-        self.task_type = task_type
+
+        category_norm = (category or "all").strip().lower()
+        if category_norm not in self._CATEGORIES:
+            raise ValueError(f"category must be one of {sorted(self._CATEGORIES)}.")
+
+        # task_type is now generic: "all" means load everything; otherwise filter by template.name.
+        # (kept as str for backwards compatibility; you can pass "vc_relax" or any new task name)
+        task_type_norm = (task_type or "all").strip()
+        if not task_type_norm:
+            task_type_norm = "all"
+
+        self.category = category_norm
+        self.task_type = task_type_norm
         self._templates = self._load_templates()
         self._materials = self._load_materials()
 
     def _load_templates(self) -> Dict[str, TaskTemplate]:
-        task_type_map = {
-            "vcrelax": {"vc_relax"},
-            "all": None,
-        }
-        allowed = task_type_map.get(self.task_type)
         templates: Dict[str, TaskTemplate] = {}
         for manifest in sorted(self.questions_dir.glob("*.json")):
             template = TaskTemplate.from_json(manifest)
-            if allowed is not None and template.name not in allowed:
+            print(manifest, template.name)
+            if self.task_type != "all" and template.name != self.task_type:
                 continue
             templates[template.name] = template
         if not templates:
-            raise RuntimeError(f"No task templates found under {self.questions_dir}")
+            raise RuntimeError(
+                f"No task templates found under {self.questions_dir} for task_type='{self.task_type}'"
+            )
         return templates
 
     def _load_materials(self) -> Dict[str, MaterialRecord]:
         materials: Dict[str, MaterialRecord] = {}
-        if self.difficulty == "all":
+
+        if self.category == "all":
             material_paths = sorted(self.materials_dir.rglob("*.json"))
         else:
-            material_paths = sorted(self.materials_dir.rglob(f"{self.difficulty}_materials.json"))
+            material_paths = sorted(self.materials_dir.rglob(f"{self.category}_materials.json"))
+
         for path in material_paths:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(payload, dict) and "materials" in payload:
@@ -267,11 +304,24 @@ class BenchmarkDataset:
                     source_path=path,
                     common_parameters=common_parameters,
                 )
+                # Preserve the raw id from the file for logging.
+                record.metadata.setdefault("material_id", record.id)
+                if self.category == "all":
+                    category_prefix = path.stem.replace("_materials", "")
+                    record.id = f"{category_prefix}_{record.id}"
+                    record.metadata.setdefault("category", category_prefix)
+                # Attach category hint for downstream stats if missing.
+                # If category == "all", preserve whatever the file provided beyond prefix.
+                if self.category != "all":
+                    record.metadata.setdefault("category", self.category)
+
                 if record.id in materials:
                     raise ValueError(f"Duplicated material id '{record.id}' at {path}")
                 materials[record.id] = record
         if not materials:
-            raise RuntimeError(f"No materials found under {self.materials_dir}")
+            raise RuntimeError(
+                f"No materials found under {self.materials_dir} for category='{self.category}'"
+            )
         return materials
 
     @property
@@ -297,9 +347,7 @@ class BenchmarkDataset:
         items: List[DataItem] = []
         overrides = parameter_overrides or {}
         pseudo_text = _pseudopotential_text(pseudopotential_family)
-        pseudo_tag = (
-            pseudopotential_family.strip().upper() if pseudopotential_family else None
-        )
+        pseudo_tag = pseudopotential_family.strip().upper() if pseudopotential_family else None
 
         for name in task_names:
             if name not in self._templates:
@@ -328,10 +376,12 @@ class BenchmarkDataset:
                     "parameters": parameters,
                     "material_info": material.info,
                     "pseudopotential_family": pseudo_tag,
+                    "category": material.metadata.get("category"),
+                    "material_id": material.id,
                 }
                 items.append(
                     DataItem(
-                        id=f"{name}:{material.id}",
+                        id=f"{name}_{material.id}",
                         task=name,
                         prompt=prompt,
                         ground_truth=ground_truth,

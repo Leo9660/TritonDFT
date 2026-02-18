@@ -1,0 +1,127 @@
+{
+  "category": "Semiconductor",
+  "materials": [
+    {
+      "id": "0",
+      "info": {
+        "formula": "Si",
+        "structure": "diamond",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fd-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "info": {
+        "formula": "Ge",
+        "structure": "diamond",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fd-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "info": {
+        "formula": "C (diamond)",
+        "structure": "diamond",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fd-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "3",
+      "info": {
+        "formula": "GaAs",
+        "structure": "zinc blende",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "4",
+      "info": {
+        "formula": "InP",
+        "structure": "zinc blende",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "5",
+      "info": {
+        "formula": "ZnS",
+        "structure": "zinc blende",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "6",
+      "info": {
+        "formula": "ZnSe",
+        "structure": "zinc blende",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "7",
+      "info": {
+        "formula": "CdTe",
+        "structure": "zinc blende",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "8",
+      "info": {
+        "formula": "AlP",
+        "structure": "zinc blende",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "9",
+      "info": {
+        "formula": "BN (hex)",
+        "structure": "hexagonal",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "P6_3/mmc"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    }
+  ],
+  "common_parameter": {},
+  "schema_version": 1
+}

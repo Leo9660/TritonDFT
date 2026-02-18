@@ -1,0 +1,127 @@
+{
+  "category": "Topological",
+  "materials": [
+    {
+      "id": "0",
+      "info": {
+        "formula": "Bi",
+        "structure": "semimetal",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "R-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "info": {
+        "formula": "Sb",
+        "structure": "semimetal",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "R-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "info": {
+        "formula": "Bi2Se3",
+        "structure": "topological insulator",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "R-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "3",
+      "info": {
+        "formula": "Bi2Te3",
+        "structure": "topological insulator",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "R-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "4",
+      "info": {
+        "formula": "Sb2Te3",
+        "structure": "topological insulator",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "R-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "5",
+      "info": {
+        "formula": "HgTe",
+        "structure": "topological insulator",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "6",
+      "info": {
+        "formula": "SnTe",
+        "structure": "topological crystalline",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "7",
+      "info": {
+        "formula": "PbTe",
+        "structure": "topological crystalline",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "8",
+      "info": {
+        "formula": "Cd3As2",
+        "structure": "Dirac semimetal",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "I4_1/acd"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "9",
+      "info": {
+        "formula": "Na3Bi",
+        "structure": "Dirac semimetal",
+        "atoms_per_primitive_cell": 4,
+        "space_group": "P6_3/mmc"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    }
+  ],
+  "common_parameter": {},
+  "schema_version": 1
+}

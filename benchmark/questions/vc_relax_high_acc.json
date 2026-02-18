@@ -1,0 +1,9 @@
+{
+  "name": "vc_relax_high_acc",
+  "description": "Variable-cell relaxations that verify whether the agent can return consistent relaxed structures.",
+  "prompt_template": "For {material_context}, perform a variable-cell relaxation (vc-relax) calculation. Require a strict energy convergence of 1 meV/atom. {parameter_context}. {pseudopotential_text}. Return the fully relaxed structure (atomic parameters).",
+  "required_ground_truth": [
+    "relaxed_structure"
+  ],
+  "default_parameters": {}
+}

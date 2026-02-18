@@ -1,7 +1,7 @@
 import json
 import re
 import os
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Tuple
 
 def get_qe_prefix(self):
     return getattr(self, "qe_bin_prefix", None) or os.environ.get("QE_BIN_PREFIX", "")
@@ -115,21 +115,10 @@ def patch_qe_input_file(
             f.write(new_text)
 
 def parse_scripts_block(generated: str) -> list[str]:
-    # </scripts> or <\scripts>
-    scripts_block = re.search(
-        r"<scripts>(.*?)</scripts>|<scripts>(.*?)<\\scripts>",
-        generated,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    if not scripts_block:
-        raise ValueError("No <scripts>...</scripts> block found in model output.")
-
-    full_block = scripts_block.group(1) if scripts_block.group(1) is not None else scripts_block.group(2)
-
-    # parsing multiple <script>...</script>
+    # parse multiple <script>...</script> directly from the model output
     scripts = re.findall(
         r"<script>(.*?)</script>|<script>(.*?)<\\script>",
-        full_block,
+        generated,
         flags=re.DOTALL | re.IGNORECASE,
     )
 
@@ -137,26 +126,33 @@ def parse_scripts_block(generated: str) -> list[str]:
     normalized = [(s[0] if s[0] else s[1]).strip() for s in scripts]
 
     if not normalized:
-        if full_block.strip():
-            normalized = [full_block.strip()]
-        else:
-            raise ValueError("Empty <scripts> block.")
+        raise ValueError("No <script>...</script> blocks found in model output.")
 
     normalized = [s.replace("\\n", "\n") for s in normalized]
 
     return normalized
 
 
-def write_inputs(work_dir: str, scripts: list, prefix: str = "input", suffix: str = ".in"):
+def write_inputs(
+    work_dir: str,
+    scripts: list,
+    prefix: str = "input",
+    suffix: str = ".in",
+    subproblem_id: Optional[int] = None,
+):
     """
     write multiple input scripts to files in work_dir.
     """
     os.makedirs(work_dir, exist_ok=True)
     paths = []
     for idx, content in enumerate(scripts, start=1):
-        path = os.path.join(work_dir, f"{prefix}_{idx}{suffix}")
+        if subproblem_id is None:
+            filename = f"{prefix}_{idx}{suffix}"
+        else:
+            filename = f"{prefix}_{subproblem_id}_{idx}{suffix}"
+        path = os.path.join(work_dir, filename)
         with open(path, "w", encoding="utf-8") as f:
-            f.write(content.rstrip() + "\n")
+            f.write(content.rstrip() + "\n\n")
         paths.append(path)
     return paths
 
@@ -172,12 +168,15 @@ def preprocess_output_list(output_list: List[str], verbose: bool = False) -> Lis
     processed = []
     for idx, item in enumerate(output_list, start=1):
         text = _read_output_item(item)
-        cleaned, removed = _strip_bands_blocks(text)
-        if verbose and removed > 0:
-            print(f"[parser] Output {idx}: trimmed {removed} lines from bands blocks.")
-        processed.append(cleaned)
-    return processed
+        text, r1 = _strip_bands_blocks(text)
 
+        # vc-relax: keep forces; scf/nscf/bands: forces usually can be dropped
+        text, r2 = _strip_scf_iteration_noise(text, keep_forces_block=True)
+
+        if verbose and (r1 + r2) > 0:
+            print(f"[parser] Output {idx}: trimmed {r1} lines (bands) + {r2} lines (scf/iter).")
+        processed.append(text)
+    return processed
 
 def _read_output_item(item: str) -> str:
     try:
@@ -208,6 +207,131 @@ def _strip_bands_blocks(text: str) -> tuple[str, int]:
         idx += 1
     return "\n".join(cleaned), removed
 
+def _strip_scf_iteration_blocks(text: str) -> tuple[str, int]:
+    lines = text.splitlines()
+    cleaned = []
+    removed = 0
+    idx = 0
+
+    # 一组明确可删的 SCF / diagonalization 噪声模式
+    drop_start_patterns = [
+        re.compile(r"^\s*iteration\s*#\s*\d+", re.IGNORECASE),
+        re.compile(r"^\s*Davidson diagonalization", re.IGNORECASE),
+    ]
+
+    drop_single_line_patterns = [
+        re.compile(r"^\s*ethr\s*=", re.IGNORECASE),
+        re.compile(r"^\s*total cpu time", re.IGNORECASE),
+        re.compile(r"^\s*avg # of iterations", re.IGNORECASE),
+    ]
+
+    while idx < len(lines):
+        line = lines[idx]
+
+        # block start（iteration / Davidson）
+        if any(p.match(line) for p in drop_start_patterns):
+            removed += 1
+            idx += 1
+            # 吃掉后续的空行或数值行
+            while idx < len(lines) and (
+                _is_blank_line(lines[idx]) or
+                _is_numeric_line(lines[idx])
+            ):
+                removed += 1
+                idx += 1
+            continue
+
+        # 单行噪声
+        if any(p.match(line) for p in drop_single_line_patterns):
+            removed += 1
+            idx += 1
+            continue
+
+        cleaned.append(line)
+        idx += 1
+
+    return "\n".join(cleaned), removed
+
+def _strip_scf_iteration_noise(text: str, keep_forces_block: bool = True) -> Tuple[str, int]:
+    lines = text.splitlines()
+    cleaned: List[str] = []
+    removed = 0
+    i = 0
+
+    iter_start = re.compile(r"^\s*iteration\s*#\s*\d+\b", re.IGNORECASE)
+
+    # 这几类我们要“整块删除”
+    # 从 iteration # N 开始，一直删到下一个 iteration # 或 “End of self-consistent calculation”
+    scf_end = re.compile(r"^\s*End of self-consistent calculation\b", re.IGNORECASE)
+
+    # 只保留最终 summary 里带 "!" 的 total energy（QE 的最终能量行）
+    mid_total_energy = re.compile(r"^\s*total energy\s*=\s*", re.IGNORECASE)
+    final_total_energy = re.compile(r"^\s*!\s*total energy\s*=\s*", re.IGNORECASE)
+
+    # 这些行也经常巨大但对 parse 没用（你可以按需扩）
+    drop_single = [
+        re.compile(r"^\s*total cpu time spent up to now\b", re.IGNORECASE),
+        re.compile(r"^\s*Davidson diagonalization\b", re.IGNORECASE),
+        re.compile(r"^\s*ethr\s*=", re.IGNORECASE),
+        re.compile(r"^\s*estimated scf accuracy\s*<\s*", re.IGNORECASE),  # 可选：只保留最终一次的话更复杂，这里先全删
+    ]
+
+    forces_header = re.compile(r"^\s*Forces acting on atoms\b", re.IGNORECASE)
+    forces_end = re.compile(r"^\s*Total force\s*=", re.IGNORECASE)
+
+    while i < len(lines):
+        line = lines[i]
+
+        # 1) 删除 iteration 块：从 iteration # 开始一直删到下一个 iteration 或 scf_end
+        if iter_start.match(line):
+            # drop until next iter_start or scf_end
+            removed += 1
+            i += 1
+            while i < len(lines) and (not iter_start.match(lines[i])) and (not scf_end.match(lines[i])):
+                removed += 1
+                i += 1
+            continue
+
+        # 2) forces block：vc-relax 通常需要保留；scf/nscf/bands 可以关掉
+        if forces_header.match(line):
+            if keep_forces_block:
+                cleaned.append(line)
+                i += 1
+                while i < len(lines):
+                    cleaned.append(lines[i])
+                    if forces_end.match(lines[i]):
+                        break
+                    i += 1
+                i += 1
+                continue
+            else:
+                removed += 1
+                i += 1
+                while i < len(lines):
+                    removed += 1
+                    if forces_end.match(lines[i]):
+                        i += 1
+                        break
+                    i += 1
+                continue
+
+        # 3) 删除“中间 total energy = ...”（只保留带 ! 的最终能量）
+        if mid_total_energy.match(line) and (not final_total_energy.match(line)):
+            removed += 1
+            i += 1
+            continue
+
+        # 4) 删除单行噪声
+        if any(p.match(line) for p in drop_single):
+            removed += 1
+            i += 1
+            continue
+
+        cleaned.append(line)
+        i += 1
+
+    return "\n".join(cleaned), removed
+
 
 def _is_blank_line(line: str) -> bool:
     return not line.strip()
@@ -220,11 +344,19 @@ def _is_numeric_line(line: str) -> bool:
     return bool(numeric_pattern.match(line))
 
 
-def get_qe_result(work_dir: str, input_paths: list, verbose: bool = False) -> list:
+def get_qe_result(
+    work_dir: str,
+    input_paths: list,
+    verbose: bool = False,
+    subproblem_id: Optional[int] = None,
+) -> list:
     input_text = []
     output_text = []
     for idx, in_path in enumerate(input_paths, start=1):
-        out_path = os.path.join(work_dir, f"output_{idx}.out")
+        if subproblem_id is None:
+            out_path = os.path.join(work_dir, f"output_{idx}.out")
+        else:
+            out_path = os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out")
 
         # Read the input file
         try:
