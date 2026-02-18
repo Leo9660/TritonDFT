@@ -1,6 +1,7 @@
-# a unified generator adapter for HF, vLLM, and OpenAI ---
+# unified_generator.py
 from typing import Optional, Tuple
 import os
+
 
 class UnifiedGenerator:
     """
@@ -8,8 +9,12 @@ class UnifiedGenerator:
       - HF transformers.pipeline("text-generation")
       - vLLM (local python API)
       - OpenAI Responses API
+      - Google Gemini API
+      - Anthropic Claude API
+
     Returns: [{"generated_text": str}]
     """
+
     def __init__(
         self,
         backend: str,
@@ -27,20 +32,25 @@ class UnifiedGenerator:
         openai_base_url: Optional[str] = None,
     ):
         self.backend = backend.lower()
+        self.model = model
         self.default_max_new_tokens = default_max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
         self.seed = seed
         self.verbose = verbose
-        self.model = model
+
+        # token accounting
         self.total_prompt_tokens = 0
         self.total_output_tokens = 0
         self.last_prompt_tokens = 0
         self.last_output_tokens = 0
+
         self._tokenizer = None
 
+        # ---------------- HF ----------------
         if self.backend == "hf":
             from transformers import pipeline
+
             self.pipe = pipeline(
                 "text-generation",
                 model=model,
@@ -49,15 +59,15 @@ class UnifiedGenerator:
             )
             self._tokenizer = getattr(self.pipe, "tokenizer", None)
             if self.verbose:
-                print(f"[UnifiedGenerator] Using HF transformers pipeline @ {model}")
+                print(f"[UnifiedGenerator] HF backend @ {model}")
 
+        # ---------------- vLLM ----------------
         elif self.backend == "vllm":
             try:
                 from vllm import LLM, SamplingParams
             except Exception as e:
-                raise RuntimeError(
-                    "vLLM not installed or import failed. `pip install vllm`"
-                ) from e
+                raise RuntimeError("vLLM not installed: pip install vllm") from e
+
             init_kwargs = {
                 "model": model,
                 "gpu_memory_utilization": vllm_gpu_mem_util,
@@ -68,39 +78,77 @@ class UnifiedGenerator:
             self.LLM = LLM
             self.SamplingParams = SamplingParams
             self.llm = LLM(**init_kwargs)
+
             try:
                 self._tokenizer = self.llm.get_tokenizer()
             except Exception:
                 self._tokenizer = None
 
             if self.verbose:
-                print(f"[UnifiedGenerator] Using vLLM @ {model} "
-                      f"(gpu_mem_util={vllm_gpu_mem_util}, tp={vllm_tensor_parallel_size})")
+                print(f"[UnifiedGenerator] vLLM backend @ {model}")
 
+        # ---------------- OpenAI ----------------
         elif self.backend == "openai":
             try:
                 from openai import OpenAI
             except Exception as e:
-                raise RuntimeError("OpenAI SDK not installed. `pip install openai`") from e
+                raise RuntimeError("OpenAI SDK not installed: pip install openai") from e
 
             api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
-            base_url = openai_base_url or os.getenv("OPENAI_BASE_URL")  # 可选
+            base_url = openai_base_url or os.getenv("OPENAI_BASE_URL")
             if api_key is None:
-                raise ValueError("OPENAI_API_KEY is required for backend='openai'.")
+                raise ValueError("OPENAI_API_KEY is required.")
 
             self._oa_client = OpenAI(api_key=api_key, base_url=base_url)
             if self.verbose:
-                print(f"[UnifiedGenerator] Using OpenAI Responses API @ {model} (base_url={base_url or 'default'})")
+                print(f"[UnifiedGenerator] OpenAI backend @ {model}")
+
+        # ---------------- Gemini ----------------
+        elif self.backend == "gemini":
+            try:
+                import google.generativeai as genai
+            except Exception as e:
+                raise RuntimeError("Gemini SDK not installed: pip install google-generativeai") from e
+
+            api_key = os.getenv("GEMINI_API_KEY")
+            if api_key is None:
+                raise ValueError("GEMINI_API_KEY is required.")
+
+            genai.configure(api_key=api_key)
+            self._genai = genai
+            self._gemini_model = genai.GenerativeModel(model)
+            if self.verbose:
+                print(f"[UnifiedGenerator] Gemini backend @ {model}")
+
+        # ---------------- Claude ----------------
+        elif self.backend == "claude":
+            try:
+                from anthropic import Anthropic
+            except Exception as e:
+                raise RuntimeError("Anthropic SDK not installed: pip install anthropic") from e
+
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if api_key is None:
+                raise ValueError("ANTHROPIC_API_KEY is required.")
+
+            self._claude_client = Anthropic(api_key=api_key)
+            if self.verbose:
+                print(f"[UnifiedGenerator] Claude backend @ {model}")
 
         else:
-            raise ValueError(f"Unknown backend: {backend}. Use 'hf', 'vllm', or 'openai'.")
+            raise ValueError(f"Unknown backend: {backend}")
 
-    def __call__(self, prompt: str, max_new_tokens: Optional[int] = None, return_full_text: bool = False):
-        """
-        Returns: list[dict] -> [{"generated_text": "..."}]
-        """
+    # ============================================================
+
+    def __call__(
+        self,
+        prompt: str,
+        max_new_tokens: Optional[int] = None,
+        return_full_text: bool = False,
+    ):
         max_new_tokens = max_new_tokens or self.default_max_new_tokens
 
+        # ---------- HF ----------
         if self.backend == "hf":
             out = self.pipe(
                 prompt,
@@ -114,6 +162,7 @@ class UnifiedGenerator:
             self._update_token_counts(prompt, text)
             return out
 
+        # ---------- vLLM ----------
         elif self.backend == "vllm":
             sp = self.SamplingParams(
                 temperature=self.temperature,
@@ -122,35 +171,133 @@ class UnifiedGenerator:
                 seed=self.seed,
             )
             outs = self.llm.generate([prompt], sp)
-            o = outs[0]
-            text = o.outputs[0].text if o.outputs else ""
+            text = outs[0].outputs[0].text if outs and outs[0].outputs else ""
             self._update_token_counts(prompt, text)
             return [{"generated_text": text}]
 
+        # ---------- OpenAI ----------
         elif self.backend == "openai":
             resp = self._oa_client.responses.create(
                 model=self.model,
                 input=prompt,
-                # top_p=self.top_p,
                 max_output_tokens=max_new_tokens,
-                # seed=self.seed,
             )
+
+            text = getattr(resp, "output_text", "") or ""
             usage = getattr(resp, "usage", None)
-            text = getattr(resp, "output_text", None)
-            if text is None:
-                try:
-                    parts = []
-                    for item in getattr(resp, "output", []) or []:
-                        for c in getattr(item, "content", []) or []:
-                            if getattr(c, "type", "") == "output_text" and hasattr(c, "text"):
-                                parts.append(getattr(c.text, "value", "") or "")
-                    text = "".join(parts) if parts else ""
-                except Exception:
-                    text = ""
-            self._update_token_counts(prompt, text, usage=usage)
+            self._update_token_counts(prompt, text, usage)
             return [{"generated_text": text}]
+
+        # ---------- Gemini ----------
+        elif self.backend == "gemini":
+            resp = self._gemini_model.generate_content(
+                prompt,
+                generation_config={
+                    # "temperature": self.temperature,
+                    # "top_p": self.top_p,
+                    "max_output_tokens": max_new_tokens,
+                },
+            )
+
+            # Never use resp.text (may raise ValueError when no text parts are returned)
+            text = self._extract_text_from_gemini(resp)
+
+            # Optional: print finish_reason / safety info when empty or verbose
+            if self.verbose or not text:
+                self._debug_gemini_response(resp)
+
+            usage = getattr(resp, "usage_metadata", None)
+            self._update_token_counts(prompt, text, usage)
+            return [{"generated_text": text}]
+
+        # ---------- Claude ----------
+        # Default decoding
+        elif self.backend == "claude":
+            resp = self._claude_client.messages.create(
+                model=self.model,
+                max_tokens=max_new_tokens,
+                # temperature=self.temperature,
+                # top_p=self.top_p,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            parts = []
+            for blk in resp.content:
+                if blk.type == "text":
+                    parts.append(blk.text)
+            text = "".join(parts)
+            usage = getattr(resp, "usage", None)
+            self._update_token_counts(prompt, text, usage)
+            return [{"generated_text": text}]
+
         else:
-            raise ValueError(f"Unknown backend: {self.backend}. Use 'hf', 'vllm', or 'openai'.")
+            raise RuntimeError("Invalid backend")
+
+    # ============================================================
+
+    # ---------------- Gemini helpers ----------------
+    def _extract_text_from_gemini(self, resp) -> str:
+        """Safely extract text from google-generativeai response without using resp.text."""
+        if resp is None:
+            return ""
+
+        texts = []
+
+        # Preferred: iterate candidates -> content -> parts
+        candidates = getattr(resp, "candidates", None) or []
+        for cand in candidates:
+            content = getattr(cand, "content", None)
+            if content is None:
+                continue
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                t = getattr(part, "text", None)
+                if t:
+                    texts.append(t)
+
+        if texts:
+            return "\n".join(texts)
+
+        # Fallback: some SDK versions may expose "content" at top-level
+        content = getattr(resp, "content", None)
+        if content is not None:
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                t = getattr(part, "text", None)
+                if t:
+                    texts.append(t)
+
+        return "\n".join(texts) if texts else ""
+
+    def _debug_gemini_response(self, resp) -> None:
+        """Verbose debug info to understand empty outputs / finish reasons."""
+        if not self.verbose or resp is None:
+            return
+
+        try:
+            candidates = getattr(resp, "candidates", None) or []
+            for i, cand in enumerate(candidates):
+                fr = getattr(cand, "finish_reason", None)
+                print(f"[UnifiedGenerator][Gemini] cand[{i}].finish_reason={fr}")
+                sr = getattr(cand, "safety_ratings", None)
+                if sr is not None:
+                    print(f"[UnifiedGenerator][Gemini] cand[{i}].safety_ratings={sr}")
+        except Exception as e:
+            print(f"[UnifiedGenerator][Gemini] debug failed: {e}")
+
+        try:
+            pf = getattr(resp, "prompt_feedback", None)
+            if pf is not None:
+                print(f"[UnifiedGenerator][Gemini] prompt_feedback={pf}")
+        except Exception as e:
+            print(f"[UnifiedGenerator][Gemini] prompt_feedback read failed: {e}")
+
+        try:
+            um = getattr(resp, "usage_metadata", None)
+            if um is not None:
+                print(f"[UnifiedGenerator][Gemini] usage_metadata={um}")
+        except Exception as e:
+            print(f"[UnifiedGenerator][Gemini] usage_metadata read failed: {e}")
 
     def reset_token_counters(self) -> None:
         self.total_prompt_tokens = 0
@@ -158,12 +305,17 @@ class UnifiedGenerator:
         self.last_prompt_tokens = 0
         self.last_output_tokens = 0
 
-    def _update_token_counts(self, prompt: str, output: str, usage: Optional[object] = None) -> None:
-        prompt_tokens, output_tokens = self._count_tokens(prompt, output, usage=usage)
-        self.last_prompt_tokens = prompt_tokens
-        self.last_output_tokens = output_tokens
-        self.total_prompt_tokens += prompt_tokens
-        self.total_output_tokens += output_tokens
+    def _update_token_counts(
+        self,
+        prompt: str,
+        output: str,
+        usage: Optional[object] = None,
+    ) -> None:
+        pt, ot = self._count_tokens(prompt, output, usage)
+        self.last_prompt_tokens = pt
+        self.last_output_tokens = ot
+        self.total_prompt_tokens += pt
+        self.total_output_tokens += ot
 
     def _count_tokens(
         self,
@@ -171,23 +323,33 @@ class UnifiedGenerator:
         output: str,
         usage: Optional[object] = None,
     ) -> Tuple[int, int]:
+
         if usage is not None:
-            prompt_tokens = getattr(usage, "prompt_tokens", None)
-            output_tokens = getattr(usage, "completion_tokens", None)
-            if prompt_tokens is not None and output_tokens is not None:
-                return int(prompt_tokens), int(output_tokens)
-        prompt_tokens = self._count_tokens_text(prompt)
-        output_tokens = self._count_tokens_text(output)
-        return prompt_tokens, output_tokens
+            # OpenAI / Claude
+            pt = getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None)
+            ot = getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None)
+
+            # Gemini
+            if pt is None:
+                pt = getattr(usage, "prompt_token_count", None)
+            if ot is None:
+                ot = getattr(usage, "candidates_token_count", None)
+
+            if pt is not None and ot is not None:
+                return int(pt), int(ot)
+
+        return self._count_tokens_text(prompt), self._count_tokens_text(output)
 
     def _count_tokens_text(self, text: str) -> int:
         if not text:
             return 0
+
         if self._tokenizer is not None:
             try:
                 return len(self._tokenizer.encode(text))
             except Exception:
                 pass
+
         try:
             import tiktoken
 

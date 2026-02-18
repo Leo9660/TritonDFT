@@ -1,0 +1,127 @@
+{
+  "category": "Insulator",
+  "materials": [
+    {
+      "id": "0",
+      "info": {
+        "formula": "NaCl",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "info": {
+        "formula": "KCl",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "info": {
+        "formula": "MgO",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "3",
+      "info": {
+        "formula": "CaO",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "4",
+      "info": {
+        "formula": "LiF",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "5",
+      "info": {
+        "formula": "NaF",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "6",
+      "info": {
+        "formula": "AlN",
+        "structure": "wurtzite",
+        "atoms_per_primitive_cell": 4,
+        "space_group": "P6_3mc"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "7",
+      "info": {
+        "formula": "SiO2 (alpha-quartz)",
+        "structure": "trigonal",
+        "atoms_per_primitive_cell": 3,
+        "space_group": "P3_121"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "8",
+      "info": {
+        "formula": "BeO",
+        "structure": "wurtzite",
+        "atoms_per_primitive_cell": 4,
+        "space_group": "P6_3mc"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "9",
+      "info": {
+        "formula": "MgF2",
+        "structure": "rutile",
+        "atoms_per_primitive_cell": 3,
+        "space_group": "P4_2/mnm"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    }
+  ],
+  "common_parameter": {},
+  "schema_version": 1
+}

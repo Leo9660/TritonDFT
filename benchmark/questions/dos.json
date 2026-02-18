@@ -1,0 +1,9 @@
+{
+  "name": "dos",
+  "description": "DOS calculation.",
+  "prompt_template": "For {material_context}, use a full workflow consisting of: 1) vc-relax, 2) scf, 3) nscf, 4) pw.x calculation=\"bands\", 5) band post-processing, and 6) DOS post-processing. {parameter_context}. {pseudopotential_text}. Do not need to explicitly return band structure. Just finish the calculation.",
+  "required_ground_truth": [
+    "relaxed_structure"
+  ],
+  "default_parameters": {}
+}

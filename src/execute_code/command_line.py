@@ -1,7 +1,38 @@
 import os
 import shlex
+import signal
 import subprocess
 from typing import Callable, List, Tuple
+
+
+def _run_bash_command(
+    cmd: str,
+    work_dir: str,
+    verbose: bool,
+    timeout_seconds: int | None = None,
+) -> tuple[int, str, str, bool]:
+    process = subprocess.Popen(
+        ["bash", "-lc", cmd],
+        cwd=work_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+        timed_out = True
+    if verbose and timed_out and timeout_seconds:
+        print(f"[runner] Timeout: exceeded {timeout_seconds}s, terminated.")
+    return process.returncode, stdout or "", stderr or "", timed_out
 
 
 def _run_commands(
@@ -11,6 +42,7 @@ def _run_commands(
     verbose: bool,
     build_cmd: Callable[[str, str, str], str],
     output_paths: List[str] | None = None,
+    timeout_seconds: int | None = None,
 ) -> Tuple[List[int], List[str]]:
     resolved_outputs: List[str] = []
     retcodes: List[int] = []
@@ -27,19 +59,21 @@ def _run_commands(
         if verbose:
             print(f"[runner] Running: {cmd} (cwd={work_dir})")
 
-        completed = subprocess.run(
-            ["bash", "-lc", cmd],
-            cwd=work_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        rc, stdout, stderr, timed_out = _run_bash_command(
+            cmd, work_dir, verbose, timeout_seconds=timeout_seconds
         )
-        retcodes.append(completed.returncode)
+        retcodes.append(rc)
+        if timed_out:
+            raise TimeoutError(
+                f"Command timed out after {timeout_seconds}s: {cmd}"
+            )
 
         if verbose:
-            print(f"[runner] Return code: {completed.returncode}")
-            if completed.stderr:
-                print(f"[runner][stderr]\n{completed.stderr}")
+            print(f"[runner] Return code: {rc}")
+            if timed_out and not stderr:
+                stderr = f"[runner] Command exceeded {timeout_seconds}s and was terminated."
+            if stderr:
+                print(f"[runner][stderr]\n{stderr}")
 
     return retcodes, resolved_outputs
 
@@ -49,6 +83,8 @@ def _run_direct(
     input_paths: List[str],
     work_dir: str,
     verbose: bool,
+    output_paths: List[str] | None = None,
+    timeout_seconds: int | None = None,
 ) -> Tuple[List[int], List[str]]:
     return _run_commands(
         exec_path,
@@ -58,4 +94,6 @@ def _run_direct(
         lambda e, inp, out: (
             f"{shlex.quote(e)} -in {shlex.quote(inp)} | tee {shlex.quote(out)}"
         ),
+        output_paths=output_paths,
+        timeout_seconds=timeout_seconds,
     )

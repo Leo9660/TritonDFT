@@ -1,0 +1,127 @@
+{
+  "category": "Optical",
+  "materials": [
+    {
+      "id": "0",
+      "info": {
+        "formula": "Si",
+        "structure": "diamond",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fd-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "info": {
+        "formula": "Ge",
+        "structure": "diamond",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fd-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "info": {
+        "formula": "GaAs",
+        "structure": "zinc blende",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "3",
+      "info": {
+        "formula": "ZnO",
+        "structure": "wurtzite",
+        "atoms_per_primitive_cell": 4,
+        "space_group": "P6_3mc"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "4",
+      "info": {
+        "formula": "Al2O3",
+        "structure": "corundum",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "R-3c"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "5",
+      "info": {
+        "formula": "MgF2",
+        "structure": "rutile",
+        "atoms_per_primitive_cell": 3,
+        "space_group": "P4_2/mnm"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "6",
+      "info": {
+        "formula": "CaF2",
+        "structure": "fluorite",
+        "atoms_per_primitive_cell": 3,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "7",
+      "info": {
+        "formula": "LiF",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "8",
+      "info": {
+        "formula": "LiNbO3",
+        "structure": "trigonal",
+        "atoms_per_primitive_cell": 10,
+        "space_group": "R3c"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "9",
+      "info": {
+        "formula": "BaF2",
+        "structure": "fluorite",
+        "atoms_per_primitive_cell": 3,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    }
+  ],
+  "common_parameter": {},
+  "schema_version": 1
+}

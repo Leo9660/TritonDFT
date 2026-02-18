@@ -1,27 +1,23 @@
 parameter_prompt = { 
     "role": "user",
     "content": ("""You are a computational materials scientist solving a DFT subproblem.
-    Now you are asked to propose ONLY the minimal necessary input parameter guesses
-    (and, if needed, compact sweep ranges) for this subproblem.
+    Now you are asked to propose ONLY the minimal necessary input parameter guesses for this subproblem.
 
     ### Instructions
     1) Propose only the parameters that are directly required or explicitly important for this query.
-       - For example, if the query only asks for an estimate of ecutwfc, output only ecutwfc.
-       - If the query asks for both ecutwfc and k-points, output only those two.
     2) Make reasonable guesses based on existing data (e.g., Materials Project or known trends).
-       Avoid performing convergence tests; instead, give an educated estimate.
-    3) Do NOT output any {tool} input files. Only return structured data for the next layer to generate scripts.
-    4) Keep output concise, minimal, and machine-consumable.
+    Avoid performing convergence tests; instead, give an educated estimate.
+    3) When guessing parameters, aim for a Pareto-efficient trade-off:
+    choose values that are accurate and numerically stable (i.e., likely to converge),
+    while keeping computational cost (time and memory) reasonably low.
+    4) Do NOT output any {tool} input files.
 
     ### Output Schema
     {{
-    "query": "<user query text>",
-    "subproblem": "<description of the current subproblem>",
     "material": "<element/compound>",
     "structure": {{
         "prototype": "<fcc|bcc|rocksalt|diamond|...>"
     }},
-    "assumptions": [],
     "parameter_guesses": {{
         "<only the parameters directly relevant to the query>": "<value>"
     }}
@@ -79,3 +75,38 @@ script_prompt_fixed = {
     # - This can be achieved in one of two ways:
     # (a) Explicitly set in &system: nosym = .true., noinv = .true.
     # (b) Provide slightly perturbed atomic positions that break inversion symmetry (e.g. displacing cations or anions by ±0.005 along z).
+
+
+# parameter_prompt = { 
+#     "role": "user",
+#     "content": ("""You are a computational materials scientist solving a DFT subproblem.
+#     Now you are asked to propose ONLY the minimal necessary input parameter guesses for this subproblem.
+
+#     ### Instructions
+#     1) Propose only the parameters that are directly required or explicitly important for this query.
+#     2) Make reasonable guesses based on existing data (e.g., Materials Project or known trends).
+#     Avoid performing convergence tests; instead, give an educated estimate.
+#     3) When guessing parameters, aim for a Pareto-efficient trade-off:
+#     choose values that are accurate and numerically stable (i.e., likely to converge),
+#     while keeping computational cost (time and memory) reasonably low.
+#     4) Do NOT output any {tool} input files.
+
+#     ### Output Schema
+#     {{
+#     "material": "<element/compound>",
+#     "structure": {{
+#         "prototype": "<fcc|bcc|rocksalt|diamond|...>"
+#     }},
+#     "parameter_guesses": {{
+#         "<only the parameters directly relevant to the query>": "<value>"
+#     }}
+#     }}
+
+#     ### The whole user query is:
+#     {query}.
+#     {previous_memory}
+#     ### Current Problem to Solve:
+#     {subproblem}.
+#     Please respond strictly in the required JSON schema, without any additional explanation.
+#     """)
+# }

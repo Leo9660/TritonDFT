@@ -15,6 +15,8 @@ DEFAULT_PSEUDO_DIRS = {
     "LDA": "../PseudoDojo/SR_v0.4.1/LDA_standard",
     "PBE": "../PseudoDojo/SR_v0.4.1/PBE_standard",
     "PBESOL": "../PseudoDojo/SR_v0.4.1/PBEsol_standard",
+    "PBE_FR": "../PseudoDojo/SR_v0.4.1/PBE_fr",
+    "PBESOL_FR": "../PseudoDojo/SR_v0.4.1/PBEsol_fr",
 }
 DEFAULT_QE_BIN_DIR = "QuantumE/bin"
 
@@ -24,6 +26,8 @@ class PseudoPaths:
     LDA: str
     PBE: str
     PBESOL: str
+    PBE_FR: str
+    PBESOL_FR: str
 
     @classmethod
     def from_dict(cls, data: dict) -> "PseudoPaths":
@@ -33,10 +37,18 @@ class PseudoPaths:
             LDA=data.get("LDA") or data.get("lda") or DEFAULT_PSEUDO_DIRS["LDA"],
             PBE=data.get("PBE") or data.get("pbe") or DEFAULT_PSEUDO_DIRS["PBE"],
             PBESOL=data.get("PBESOL") or data.get("pbesol") or DEFAULT_PSEUDO_DIRS["PBESOL"],
+            PBE_FR=data.get("PBE_FR") or data.get("pbe_fr") or DEFAULT_PSEUDO_DIRS["PBE_FR"],
+            PBESOL_FR=data.get("PBESOL_FR") or data.get("pbesol_fr") or DEFAULT_PSEUDO_DIRS["PBESOL_FR"],
         )
 
     def as_dict(self) -> dict:
-        return {"lda": self.LDA, "pbe": self.PBE, "pbesol": self.PBESOL}
+        return {
+            "lda": self.LDA,
+            "pbe": self.PBE,
+            "pbesol": self.PBESOL,
+            "pbe_fr": self.PBE_FR,
+            "pbesol_fr": self.PBESOL_FR,
+        }
 
 
 @dataclass(frozen=True)

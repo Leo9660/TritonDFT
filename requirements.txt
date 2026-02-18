@@ -9,3 +9,6 @@ mp-api==0.35.1
 fastapi
 uvicorn
 PyYAML
+anthropic
+google-generativeai
+tiktoken

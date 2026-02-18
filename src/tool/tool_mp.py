@@ -94,7 +94,9 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
     result = {
         "material_ids": [],
         "initial_structures": [],
-        "relaxed_structures": []
+        "relaxed_structures": [],
+        "conventional_structure": [],
+        "primitive_structure": [],
     }
 
     mats_by_id = {m.material_id: m for m in mats}
@@ -124,11 +126,32 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
                     ehull_min = doc.energy_above_hull
                     min_id = mid
                     min_subid = i
-                    print(f"New min ehull: {ehull_min} for {min_id} (subid {min_subid})")
+                    # print(f"New min ehull: {ehull_min} for {min_id} (subid {min_subid})")
+
+    retrieved_structure = mpr.get_structure_by_material_id(min_id)
+    # 使用 SpacegroupAnalyzer 进行标准化处理
+    sga = SpacegroupAnalyzer(retrieved_structure)
+
+    # 1. 获取真正的原始胞 (LiNbO3 应该是 10 原子的那个)
+    primitive = sga.get_primitive_standard_structure() 
+
+    # 2. 获取常规胞 (LiNbO3 应该是 30 原子的那个)
+    conventional = sga.get_conventional_standard_structure()
+
+    # 存入结果
+    result["primitive_structure"].append(primitive)
+    result["conventional_structure"].append(conventional)
 
     result["material_ids"].append(min_id)
     result["initial_structures"].append(init_list[min_id][min_subid])
     result["relaxed_structures"].append(relaxed_lookup.get(mid)[min_subid])
+    # result["conventional_structure"].append(conventional)
+    # result["primitive_structure"].append(primitive)
+
+    if verbose:
+        print(f"[MP] Retrieved materials ID: {min_id}")
+        print(f"[MP] Conventional structure: {conventional}")
+        print(f"[MP] Primitive structure: {primitive}")
 
     gt = {}
     try:
@@ -152,6 +175,8 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
     except Exception:
         pass
     result["ground_truth"] = gt
+
+    # print("[MP result]", result)
 
     return result
 

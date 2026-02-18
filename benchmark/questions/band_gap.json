@@ -1,0 +1,9 @@
+{
+  "name": "band_gap",
+  "description": "Band gap calculation.",
+  "prompt_template": "For {material_context}, Use a full workflow consisting of: 1) vc-relax, 2) scf, 3) nscf, 4) band structure calculation and 5) band post-processing. {parameter_context}. {pseudopotential_text}. Do not need to explicitly return band structure. Just finish the calculation.",
+  "required_ground_truth": [
+    "relaxed_structure"
+  ],
+  "default_parameters": {}
+}

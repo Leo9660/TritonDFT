@@ -1,0 +1,127 @@
+{
+  "category": "Ferroelectric",
+  "materials": [
+    {
+      "id": "0",
+      "info": {
+        "formula": "BaTiO3",
+        "structure": "perovskite",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "P4mm"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "info": {
+        "formula": "PbTiO3",
+        "structure": "perovskite",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "P4mm"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "info": {
+        "formula": "KNbO3",
+        "structure": "perovskite",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "Amm2"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "3",
+      "info": {
+        "formula": "NaNbO3",
+        "structure": "perovskite",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "Pbcm"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "4",
+      "info": {
+        "formula": "LiNbO3",
+        "structure": "trigonal",
+        "atoms_per_primitive_cell": 10,
+        "space_group": "R3c"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "5",
+      "info": {
+        "formula": "LiTaO3",
+        "structure": "trigonal",
+        "atoms_per_primitive_cell": 10,
+        "space_group": "R3c"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "6",
+      "info": {
+        "formula": "GeTe",
+        "structure": "rhombohedral",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "R3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "7",
+      "info": {
+        "formula": "SnTe",
+        "structure": "rhombohedral",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "8",
+      "info": {
+        "formula": "BiFeO3",
+        "structure": "perovskite",
+        "atoms_per_primitive_cell": 10,
+        "space_group": "R3c"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "9",
+      "info": {
+        "formula": "HfO2",
+        "structure": "orthorhombic",
+        "atoms_per_primitive_cell": 12,
+        "space_group": "P2_1/c"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    }
+  ],
+  "common_parameter": {},
+  "schema_version": 1
+}

@@ -1,0 +1,127 @@
+{
+  "category": "Thermoelectric",
+  "materials": [
+    {
+      "id": "0",
+      "info": {
+        "formula": "Bi2Te3",
+        "structure": "rhombohedral",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "R-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "info": {
+        "formula": "Sb2Te3",
+        "structure": "rhombohedral",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "R-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "info": {
+        "formula": "PbTe",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "3",
+      "info": {
+        "formula": "SnTe",
+        "structure": "rocksalt",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "4",
+      "info": {
+        "formula": "GeTe",
+        "structure": "rhombohedral",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "R3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "5",
+      "info": {
+        "formula": "Mg2Si",
+        "structure": "antifluorite",
+        "atoms_per_primitive_cell": 3,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "6",
+      "info": {
+        "formula": "Mg2Ge",
+        "structure": "antifluorite",
+        "atoms_per_primitive_cell": 3,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "7",
+      "info": {
+        "formula": "SiGe",
+        "structure": "diamond",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "F-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "8",
+      "info": {
+        "formula": "CoSb3",
+        "structure": "skutterudite",
+        "atoms_per_primitive_cell": 8,
+        "space_group": "Im-3"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "9",
+      "info": {
+        "formula": "SnSe",
+        "structure": "orthorhombic",
+        "atoms_per_primitive_cell": 8,
+        "space_group": "Pnma"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    }
+  ],
+  "common_parameter": {},
+  "schema_version": 1
+}

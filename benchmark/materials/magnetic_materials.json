@@ -1,0 +1,127 @@
+{
+  "category": "Magnetic",
+  "materials": [
+    {
+      "id": "0",
+      "info": {
+        "formula": "Fe",
+        "structure": "ferromagnetic metal",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Im-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "info": {
+        "formula": "Co",
+        "structure": "ferromagnetic metal",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "P6_3/mmc"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "info": {
+        "formula": "Ni",
+        "structure": "ferromagnetic metal",
+        "atoms_per_primitive_cell": 1,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "3",
+      "info": {
+        "formula": "Cr",
+        "structure": "antiferromagnetic metal",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Im-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "4",
+      "info": {
+        "formula": "Mn",
+        "structure": "antiferromagnetic metal",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "I-43m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "5",
+      "info": {
+        "formula": "NiO",
+        "structure": "antiferromagnetic oxide",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "6",
+      "info": {
+        "formula": "MnO",
+        "structure": "antiferromagnetic oxide",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "7",
+      "info": {
+        "formula": "FeO",
+        "structure": "antiferromagnetic oxide",
+        "atoms_per_primitive_cell": 2,
+        "space_group": "Fm-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "8",
+      "info": {
+        "formula": "Fe3O4",
+        "structure": "ferrimagnetic",
+        "atoms_per_primitive_cell": 7,
+        "space_group": "Fd-3m"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    },
+    {
+      "id": "9",
+      "info": {
+        "formula": "Cr2O3",
+        "structure": "antiferromagnetic",
+        "atoms_per_primitive_cell": 5,
+        "space_group": "R-3c"
+      },
+      "parameters": {},
+      "ground_truth": {},
+      "metadata": {}
+    }
+  ],
+  "common_parameter": {},
+  "schema_version": 1
+}
