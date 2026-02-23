@@ -13,12 +13,46 @@ class UnifiedGenerator:
       - Anthropic Claude API
 
     Returns: [{"generated_text": str}]
+
+    When *backend* is ``"auto"`` (the default) the backend is inferred from the
+    model name and any explicitly supplied API credentials.
     """
+
+    _OPENAI_PREFIXES = ("gpt-", "o1", "o3", "o4", "chatgpt")
+
+    @staticmethod
+    def _infer_backend(
+        model: str,
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
+    ) -> str:
+        """Resolve a backend name from *model* and optional credentials."""
+        model_lower = model.lower()
+
+        if openai_api_key or openai_base_url:
+            return "openai"
+
+        if any(model_lower.startswith(p) for p in UnifiedGenerator._OPENAI_PREFIXES):
+            return "openai"
+
+        if model_lower.startswith("claude"):
+            return "claude"
+
+        if "gemini" in model_lower:
+            return "gemini"
+
+        if "/" in model:
+            return "vllm"
+
+        raise ValueError(
+            f"Cannot infer backend for model '{model}'. "
+            f"Please specify backend explicitly: 'openai', 'claude', 'gemini', 'hf', or 'vllm'."
+        )
 
     def __init__(
         self,
-        backend: str,
         model: str,
+        backend: str = "auto",
         hf_device_map: str = "auto",
         hf_dtype: str = "auto",
         vllm_gpu_mem_util: float = 0.9,
@@ -31,7 +65,10 @@ class UnifiedGenerator:
         openai_api_key: Optional[str] = None,
         openai_base_url: Optional[str] = None,
     ):
-        self.backend = backend.lower()
+        if backend.lower() == "auto":
+            self.backend = self._infer_backend(model, openai_api_key, openai_base_url)
+        else:
+            self.backend = backend.lower()
         self.model = model
         self.default_max_new_tokens = default_max_new_tokens
         self.temperature = temperature

@@ -33,7 +33,7 @@ class DFTAgent:
         verbose: bool = False,
         work_dir: str = "tmp",
         max_new_tokens: int = 2048,
-        backend: str = "hf",
+        backend: str = "auto",
         temperature: float = 0.0,
         top_p: float = 1.0,
         vllm_tensor_parallel_size: int = None,
@@ -115,11 +115,116 @@ class DFTAgent:
         if self.verbose:
             print(f"[DFTAgent] Initialized with model={model}, dft_tool={dft_tool}, work_dir_root={self.work_dir_root}")
 
-    def _prepare_run_directory(self) -> Path:
-        timestamp_tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = self.work_dir_root / f"job_{timestamp_tag}"
+    @staticmethod
+    def _sanitize_name(name: str, max_len: int = 40) -> str:
+        """Sanitize a string for safe use as a directory component."""
+        name = re.sub(r'[^\w\-]', '_', name)
+        name = re.sub(r'_+', '_', name).strip('_')
+        return name[:max_len] if name else ""
+
+    _TASK_PATTERNS: list[tuple[str, str]] = [
+        (r'\bvc[_-]relax\b|variable[_-]cell\s+relax', 'vc-relax'),
+        (r'\bnscf\b|non[_-]self[_-]consistent', 'nscf'),
+        (r'\bscf\b|self[_-]consistent\s+field', 'scf'),
+        (r'\brelax(?:ation)?\b', 'relax'),
+        (r'\bband[\s_-]?(?:structure|gap|calculation)', 'bands'),
+        (r'\bphonon', 'phonon'),
+        (r'\bmolecular[\s_-]dynamics\b', 'md'),
+        (r'\bdos\b|density\s+of\s+states', 'dos'),
+    ]
+
+    @classmethod
+    def _extract_query_metadata(cls, query: str) -> dict:
+        """
+        Extract material name and task type(s) from a free-form query string.
+
+        Returns ``{"material_name": str, "task_type": str}``.
+        ``task_type`` joins multiple detected types with ``+``
+        (e.g. ``"vc-relax+scf"``).
+        """
+        material = ""
+
+        # "material = Si", "material=BaTiO3"
+        m = re.search(r'material\s*=\s*([A-Za-z][A-Za-z0-9]*)', query)
+        if m:
+            material = m.group(1)
+        else:
+            # "for [adjective] <ChemFormula>", e.g. "for tetragonal BaTiO3"
+            m = re.search(
+                r'\bfor\s+(?:[\w-]+\s+)?'
+                r'([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b',
+                query,
+            )
+            if m:
+                material = m.group(1)
+
+        tasks: list[str] = []
+        for pattern, name in cls._TASK_PATTERNS:
+            if re.search(pattern, query, re.IGNORECASE) and name not in tasks:
+                tasks.append(name)
+        if 'vc-relax' in tasks and 'relax' in tasks:
+            tasks.remove('relax')
+
+        return {"material_name": material, "task_type": "+".join(tasks)}
+
+    def _prepare_run_directory(
+        self,
+        query: str = "",
+        material_name: str = "",
+        task_type: str = "",
+        run_id: int = 0,
+        category: str = "",
+    ) -> Path:
+        """
+        Build a structured run directory under *work_dir_root*.
+
+        If *material_name* or *task_type* are empty, they are auto-extracted
+        from *query*.  Layout::
+
+            work_dir_root/
+            └── YYYY-MM-DD/
+                └── <material>_<task>_<HHMMSS>_<uuid8>/
+                    └── run_meta.json
+
+        Falls back to ``run_<HHMMSS>_<uuid8>`` when nothing can be inferred.
+        """
+        if query and (not material_name or not task_type):
+            extracted = self._extract_query_metadata(query)
+            material_name = material_name or extracted["material_name"]
+            task_type = task_type or extracted["task_type"]
+
+        now = datetime.datetime.now()
+        date_dir = self.work_dir_root / now.strftime("%Y-%m-%d")
+
+        parts: list[str] = []
+        if material_name:
+            parts.append(self._sanitize_name(material_name))
+        if task_type:
+            parts.append(self._sanitize_name(task_type))
+        if not parts:
+            parts.append("run")
+        parts.append(now.strftime("%H%M%S"))
+        parts.append(uuid.uuid4().hex[:8])
+
+        run_dir = date_dir / "_".join(parts)
         run_dir.mkdir(parents=True, exist_ok=True)
         self.work_dir = run_dir
+
+        meta = {
+            "run_id": run_id,
+            "material_name": material_name,
+            "task_type": task_type,
+            "category": category,
+            "query": query,
+            "model": self.model,
+            "dft_tool": self.dft_tool,
+            "created_at": now.isoformat(),
+            "directory": str(run_dir),
+        }
+        (run_dir / "run_meta.json").write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
         if self.verbose:
             print(f"[DFTAgent] Using run directory: {self.work_dir}")
         return run_dir
@@ -447,7 +552,13 @@ class DFTAgent:
             self.work_dir = Path(work_dir).expanduser().resolve()
             self.work_dir.mkdir(parents=True, exist_ok=True)
         else:
-            self._prepare_run_directory()
+            self._prepare_run_directory(
+                query=query,
+                material_name=material_name,
+                task_type=task_type,
+                run_id=run_id,
+                category=category,
+            )
             
         if self.output_log:
             output_to_log_file(self.work_dir_root, self.output_log_file, f"###[Starting new run for query]: {query}\n", new=False)
