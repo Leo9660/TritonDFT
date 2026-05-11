@@ -42,12 +42,12 @@ def patch_qe_input_file(
             )
         return pattern.sub(rf"\1'{value}'\3", text)
 
-    # if new_pseudo_dir:
-    #     text = _replace_key(text, "pseudo_dir", new_pseudo_dir)
+    if new_pseudo_dir:
+        text = _replace_key(text, "pseudo_dir", new_pseudo_dir)
     if new_outdir:
         text = _replace_key(text, "outdir", new_outdir)
-    # if new_prefix:
-    #     text = _replace_key(text, "prefix", new_prefix)
+    if new_prefix:
+        text = _replace_key(text, "prefix", new_prefix)
 
     # Process ATOMIC_SPECIES block
     lines = text.splitlines()
@@ -113,6 +113,108 @@ def patch_qe_input_file(
     if new_text != text:
         with open(in_path, "w", encoding="utf-8") as f:
             f.write(new_text)
+
+
+def enforce_qe_parameters_from_guess(
+    in_path: str,
+    params_guess: Dict[str, Any],
+) -> None:
+    """
+    Enforce reviewed parameter guesses onto a QE input file after script generation.
+    This is intentionally narrow: it only patches key reviewed fields so the final
+    input cannot silently drift away from the accepted parameter JSON.
+    """
+    if not params_guess:
+        return
+
+    with open(in_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    def _extract_number(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return str(value)
+        s = str(value)
+        m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
+        return m.group(0) if m else None
+
+    def _replace_or_insert_namelist_key(text: str, namelist: str, key: str, value: str, quote: bool = False) -> str:
+        rendered = f"'{value}'" if quote else value
+        key_pattern = re.compile(
+            rf"(^\s*{re.escape(key)}\s*=\s*)([^,\n/]+)(\s*,?\s*$)",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if key_pattern.search(text):
+            return key_pattern.sub(lambda m: f"{m.group(1)}{rendered}{m.group(3)}", text, count=1)
+
+        nl_pattern = re.compile(rf"(^\s*&{re.escape(namelist)}\b.*?$)(.*?)(^\s*/\s*$)", re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        match = nl_pattern.search(text)
+        if not match:
+            return text
+        header, body, footer = match.groups()
+        insertion = f"{body}    {key} = {rendered}\n"
+        return text[:match.start()] + header + insertion + footer + text[match.end():]
+
+    def _replace_k_points_automatic(text: str, mesh: str) -> str:
+        mesh = mesh.lower().replace("×", "x")
+        parts = [p.strip() for p in mesh.split("x") if p.strip()]
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            return text
+        replacement = f"K_POINTS automatic\n{parts[0]} {parts[1]} {parts[2]} 1 1 1"
+        pattern = re.compile(
+            r"^\s*K_POINTS\s+automatic\s*$\n^\s*.*?$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if pattern.search(text):
+            return pattern.sub(replacement, text, count=1)
+        return text
+
+    guessed = params_guess.get("parameter_guesses", params_guess)
+    if not isinstance(guessed, dict):
+        return
+
+    num = _extract_number(guessed.get("ecutwfc"))
+    if num is not None:
+        text = _replace_or_insert_namelist_key(text, "system", "ecutwfc", num, quote=False)
+
+    num = _extract_number(guessed.get("ecutrho"))
+    if num is not None:
+        text = _replace_or_insert_namelist_key(text, "system", "ecutrho", num, quote=False)
+
+    kp = guessed.get("k_points")
+    if kp:
+        text = _replace_k_points_automatic(text, str(kp))
+
+    occ = guessed.get("occupations")
+    if occ:
+        text = _replace_or_insert_namelist_key(text, "system", "occupations", str(occ), quote=True)
+
+    smear = guessed.get("smearing")
+    if smear and str(smear).lower() not in {"none", "fixed", "null"}:
+        smear_text = str(smear).strip()
+        if "," in smear_text:
+            smear_text = smear_text.split(",", 1)[0].strip()
+        if re.search(r"\bry\b", smear_text, re.IGNORECASE):
+            num = _extract_number(smear_text)
+            if num is not None:
+                text = _replace_or_insert_namelist_key(text, "system", "degauss", num, quote=False)
+        else:
+            text = _replace_or_insert_namelist_key(text, "system", "smearing", smear_text, quote=True)
+
+    num = _extract_number(guessed.get("degauss"))
+    if num is not None:
+        text = _replace_or_insert_namelist_key(text, "system", "degauss", num, quote=False)
+
+    for key in ("vdw_corr", "noncolin", "lspinorb"):
+        value = guessed.get(key)
+        if value is None:
+            continue
+        quote = key == "vdw_corr"
+        text = _replace_or_insert_namelist_key(text, "system", key, str(value), quote=quote)
+
+    with open(in_path, "w", encoding="utf-8") as f:
+        f.write(text)
 
 def parse_scripts_block(generated: str) -> list[str]:
     # parse multiple <script>...</script> directly from the model output

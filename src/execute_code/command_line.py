@@ -55,6 +55,7 @@ def _run_commands(
         )
         resolved_outputs.append(out_path)
         cmd = build_cmd(exec_path, os.path.basename(in_path), os.path.basename(out_path))
+        cmd = f"set -o pipefail; {cmd}"
 
         if verbose:
             print(f"[runner] Running: {cmd} (cwd={work_dir})")

@@ -1,4 +1,5 @@
 import os
+import shutil
 from typing import Callable, List, Optional, Tuple
 
 from execute_code.mpi_run import run_mpirun_probe, run_with_mpirun
@@ -30,7 +31,12 @@ def run_qe_inputs(
     Execute QE inputs sequentially using the selected execution mode.
     """
     exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
-    if run_mode == "mpirun":
+    effective_run_mode = run_mode
+    if run_mode == "mpirun" and shutil.which("mpirun") is None:
+        if verbose:
+            print("[runner] mpirun not found on PATH; falling back to local execution mode.")
+        effective_run_mode = "local"
+    if effective_run_mode == "mpirun":
         if auto_parallel:
             rc, commands = run_mpirun_probe(
                 exec_path,
@@ -82,9 +88,9 @@ def run_qe_inputs(
             parallel_np,
             output_paths=output_paths,
         )
-    elif run_mode == "local":
+    elif effective_run_mode == "local":
         return _run_direct(exec_path, input_paths, work_dir, verbose, output_paths=output_paths)
-    elif run_mode == "slurm":
+    elif effective_run_mode == "slurm":
         if slurm_launcher is None:
             raise ValueError("Slurm launcher callback is required for slurm run mode.")
         return slurm_launcher(
@@ -100,7 +106,7 @@ def run_qe_inputs(
             output_paths,
         )
     else:
-        raise ValueError(f"Unknown run mode: {run_mode}")
+        raise ValueError(f"Unknown run mode: {effective_run_mode}")
 
 
 def _confirm_auto_parallel_run(auto_confirm: bool) -> bool:

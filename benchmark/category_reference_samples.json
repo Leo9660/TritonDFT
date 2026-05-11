@@ -1,0 +1,92 @@
+{
+  "insulator": {
+    "exemplar_material": "MgO",
+    "notes": "Reference anchor only. Do not copy blindly; infer the actual target from the specific material, cell size, dimensionality, and accuracy tier.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 90, "k_points": [6, 6, 6]},
+      "10_mev_atom": {"ecutwfc_ry": 80, "k_points": [4, 4, 4]},
+      "20_mev_atom": {"ecutwfc_ry": 80, "k_points": [4, 4, 4]}
+    }
+  },
+  "metal": {
+    "exemplar_material": "Cu",
+    "notes": "Reference anchor only. Metals often need denser sampling than insulators, but do not generalize one metal to all others.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 90, "k_points": [16, 16, 16]},
+      "10_mev_atom": {"ecutwfc_ry": 90, "k_points": [12, 12, 12]},
+      "20_mev_atom": {"ecutwfc_ry": 90, "k_points": [10, 10, 10]}
+    }
+  },
+  "topological": {
+    "exemplar_material": "Sb",
+    "notes": "Reference anchor only. Topological materials vary strongly with SOC, dimensionality, and layer character.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 80, "k_points": [12, 12, 12]},
+      "10_mev_atom": {"ecutwfc_ry": 80, "k_points": [8, 8, 8]},
+      "20_mev_atom": {"ecutwfc_ry": 80, "k_points": [6, 6, 6]}
+    }
+  },
+  "semiconductor": {
+    "exemplar_material": "GaAs",
+    "notes": "Reference anchor only. Use the GaAs primitive-cell semiconductor scale as a category anchor, but still infer the final answer from the specific material and cell.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 80, "k_points": [10, 10, 10]},
+      "10_mev_atom": {"ecutwfc_ry": 80, "k_points": [8, 8, 8]},
+      "20_mev_atom": {"ecutwfc_ry": 80, "k_points": [6, 6, 6]}
+    }
+  },
+  "optical": {
+    "exemplar_material": "GaAs",
+    "notes": "Reference anchor only. Optical targets can span semiconductors and insulators; use the actual material physics, not category label alone.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 80, "k_points": [10, 10, 10]},
+      "10_mev_atom": {"ecutwfc_ry": 80, "k_points": [8, 8, 8]},
+      "20_mev_atom": {"ecutwfc_ry": 80, "k_points": [6, 6, 6]}
+    }
+  },
+  "ferroelectric": {
+    "exemplar_material": "BiFeO3",
+    "notes": "Reference anchor only. Ferroelectrics can have larger cells and softer distortions; do not transfer small-cell sampling blindly.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 90, "k_points": [8, 8, 8]},
+      "10_mev_atom": {"ecutwfc_ry": 80, "k_points": [4, 4, 4]},
+      "20_mev_atom": {"ecutwfc_ry": 80, "k_points": [4, 4, 4]}
+    }
+  },
+  "piezoelectric": {
+    "exemplar_material": "SiO2",
+    "notes": "Reference anchor only. Use anisotropic sampling when the cell shape and reciprocal-space resolution justify it.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 90, "k_points": [6, 6, 5]},
+      "10_mev_atom": {"ecutwfc_ry": 80, "k_points": [6, 6, 5]},
+      "20_mev_atom": {"ecutwfc_ry": 80, "k_points": [6, 6, 5]}
+    }
+  },
+  "magnetic": {
+    "exemplar_material": "Co",
+    "notes": "Reference anchor only. Magnetic materials vary strongly with metallicity and correlation.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 100, "k_points": [14, 14, 14]},
+      "10_mev_atom": {"ecutwfc_ry": 90, "k_points": [8, 8, 8]},
+      "20_mev_atom": {"ecutwfc_ry": 90, "k_points": [8, 8, 8]}
+    }
+  },
+  "thermoelectric": {
+    "exemplar_material": "Mg2Si",
+    "notes": "Reference anchor only. Layered thermoelectrics often need anisotropic meshes; do not copy isotropic anchors blindly.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 90, "k_points": [10, 10, 10]},
+      "10_mev_atom": {"ecutwfc_ry": 80, "k_points": [6, 6, 6]},
+      "20_mev_atom": {"ecutwfc_ry": 80, "k_points": [6, 6, 6]}
+    }
+  },
+  "superconductor": {
+    "exemplar_material": "V",
+    "notes": "Reference anchor only. Superconductors vary strongly with metallicity, SOC, and dimensionality.",
+    "tiers": {
+      "1_mev_atom": {"ecutwfc_ry": 80, "k_points": [14, 14, 14]},
+      "10_mev_atom": {"ecutwfc_ry": 80, "k_points": [10, 10, 10]},
+      "20_mev_atom": {"ecutwfc_ry": 70, "k_points": [8, 8, 8]}
+    }
+  }
+}

@@ -49,6 +49,51 @@ result_parse_prompt = {
     """)
 }
 
+result_parse_prompt_gemini = {
+    "role": "user",
+    "content": ("""Now you are asked to parse the output of a finished DFT run.
+
+    ### Clarification
+    - param_json: the planned parameter configuration for this subproblem.
+    - input_file: the actual {fn} input text used in this run.
+    - output_text: the raw output result produced by {fn}.
+
+    ### Parse Requirement
+    {parse_requirement}
+
+    ### Instructions
+    1) Determine whether the run and required post-processing steps finished correctly.
+    2) Extract only the quantities explicitly required by parse_requirement.
+    3) Keep the output minimal and machine-consumable.
+
+    ### Completion Rules (IMPORTANT)
+    - Mark the subproblem as completed if the run finished and the required output files
+      or parsing steps were executed, even if some physical quantities are null.
+    - Do NOT treat missing values (e.g., band_gap, VBM, CBM) as a failure by themselves.
+    - If a quantity cannot be determined, set it to null and continue.
+
+    ### Input
+    param_json = {input_json}
+    input_file = {input_file}
+    output_text = {output_text}
+
+    ### Plain-text output format
+    PREFIX: <system_<number> or null>
+    SUCCESS: <true or false>
+    KEY_FINDINGS:
+    <one quantity per line in the form key = value>
+    END_KEY_FINDINGS
+    CONCLUSION: <Briefly state the run outcome and if it fails, specify the reason why. Limit to 1-2 concise sentences.>
+
+    Notes for values:
+    - Use null when a value cannot be found.
+    - KEY_FINDINGS must contain only keys listed in parse_requirement.
+    - Output plain text only, not JSON and not markdown.
+    - If the output_text contains an explicit completion indicator such as "JOB DONE" (case-insensitive),
+      you MUST mark the subproblem as completed: set SUCCESS = true, regardless of missing quantities.
+    """)
+}
+
 # result_parse_prompt_backup = {
 #     "role": "user",
 #     "content": ("""Now you are asked to parse the output of a finished DFT run.

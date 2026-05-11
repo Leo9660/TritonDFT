@@ -68,6 +68,7 @@ def _run_mpirun_command(
         cmd = command
         if placeholders:
             cmd = command.replace("{input_filename}", input_name).replace("{output_filename}", output_name)
+        cmd = f"set -o pipefail; {cmd}"
         if output_paths and idx - 1 < len(output_paths):
             output_path = output_paths[idx - 1]
         else:
