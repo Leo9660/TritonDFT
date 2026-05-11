@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "description": "Expert reference k-point meshes and ecutwfc floors for post-run scoring only. Do not inject this file into agent prompts during raw-guess benchmark runs.",
+  "accuracy_tiers": {
+    "high": "1 meV/atom",
+    "medium": "10 meV/atom",
+    "low": "20 meV/atom"
+  },
+  "materials": {
+    "AlP": {
+      "space_group": "F-43m",
+      "high_ecutwfc_ry": 40,
+      "medium_ecutwfc_ry": 40,
+      "low_ecutwfc_ry": 40,
+      "high": [8, 8, 8],
+      "medium": [6, 6, 6],
+      "low": [6, 6, 6]
+    },
+    "BN_hex": {
+      "aliases": ["BN (hex)", "BN_hex"],
+      "space_group": "P6_3/mmc",
+      "high_ecutwfc_ry": 80,
+      "medium_ecutwfc_ry": 70,
+      "low_ecutwfc_ry": 70,
+      "high": [6, 6, 2],
+      "medium": [6, 6, 2],
+      "low": [4, 4, 2]
+    },
+    "C_diamond": {
+      "aliases": ["C (diamond)", "C_diamond", "diamond C"],
+      "space_group": "Fd-3m",
+      "high_ecutwfc_ry": 80,
+      "medium_ecutwfc_ry": 70,
+      "low_ecutwfc_ry": 70,
+      "high": [8, 8, 8],
+      "medium": [6, 6, 6],
+      "low": [6, 6, 6]
+    },
+    "CdTe": {
+      "space_group": "F-43m",
+      "high_ecutwfc_ry": 100,
+      "medium_ecutwfc_ry": 90,
+      "low_ecutwfc_ry": 90,
+      "high": [8, 8, 8],
+      "medium": [6, 6, 6],
+      "low": [6, 6, 6]
+    },
+    "GaAs": {
+      "space_group": "F-43m",
+      "high_ecutwfc_ry": 80,
+      "medium_ecutwfc_ry": 80,
+      "low_ecutwfc_ry": 80,
+      "high": [10, 10, 10],
+      "medium": [8, 8, 8],
+      "low": [6, 6, 6]
+    },
+    "Ge": {
+      "space_group": "Fd-3m",
+      "high_ecutwfc_ry": 80,
+      "medium_ecutwfc_ry": 80,
+      "low_ecutwfc_ry": 70,
+      "high": [12, 12, 12],
+      "medium": [8, 8, 8],
+      "low": [8, 8, 8]
+    },
+    "InP": {
+      "space_group": "F-43m",
+      "high_ecutwfc_ry": 70,
+      "medium_ecutwfc_ry": 70,
+      "low_ecutwfc_ry": 60,
+      "high": [10, 10, 10],
+      "medium": [6, 6, 6],
+      "low": [6, 6, 6]
+    },
+    "Si": {
+      "space_group": "Fd-3m",
+      "high_ecutwfc_ry": 40,
+      "medium_ecutwfc_ry": 40,
+      "low_ecutwfc_ry": 40,
+      "high": [10, 10, 10],
+      "medium": [8, 8, 8],
+      "low": [6, 6, 6]
+    },
+    "ZnS": {
+      "space_group": "F-43m",
+      "high_ecutwfc_ry": 80,
+      "medium_ecutwfc_ry": 80,
+      "low_ecutwfc_ry": 80,
+      "high": [8, 8, 8],
+      "medium": [6, 6, 6],
+      "low": [6, 6, 6]
+    },
+    "ZnSe": {
+      "space_group": "F-43m",
+      "high_ecutwfc_ry": 90,
+      "medium_ecutwfc_ry": 80,
+      "low_ecutwfc_ry": 80,
+      "high": [8, 8, 8],
+      "medium": [6, 6, 6],
+      "low": [6, 6, 6]
+    }
+  }
+}

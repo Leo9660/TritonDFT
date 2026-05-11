@@ -1,8 +1,9 @@
 from typing import Dict, List, Union
 from prompt.planner import planner_messages
-from prompt.tool_setup import parameter_prompt, script_prompt_fixed
-from prompt.result_parse import result_parse_prompt
-from prompt.result_judge import result_judge_prompt
+from prompt.tool_setup import parameter_prompt, parameter_prompt_gemini, script_prompt_fixed, script_prompt_fixed_gemini
+from prompt.parameter_self_judge import parameter_self_judge_prompt, parameter_self_judge_prompt_gemini
+from prompt.result_parse import result_parse_prompt, result_parse_prompt_gemini
+from prompt.result_judge import result_judge_prompt, result_judge_prompt_gemini
 from prompt.info_query import api_call_prompt
 from prompt.slurm_execution import slurm_execution_prompt
 
@@ -22,14 +23,28 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
         template = planner_messages
     elif prompt_type == "parameter":
         template = parameter_prompt
+    elif prompt_type == "parameter_gemini":
+        template = parameter_prompt_gemini
     elif prompt_type == "script":
         template = script_prompt_fixed
     elif prompt_type == "script_fixed":
         template = script_prompt_fixed
+    elif prompt_type == "script_gemini":
+        template = script_prompt_fixed_gemini
+    elif prompt_type == "script_fixed_gemini":
+        template = script_prompt_fixed_gemini
     elif prompt_type == "result_parse":
         template = result_parse_prompt
+    elif prompt_type == "result_parse_gemini":
+        template = result_parse_prompt_gemini
+    elif prompt_type == "parameter_self_judge":
+        template = parameter_self_judge_prompt
+    elif prompt_type == "parameter_self_judge_gemini":
+        template = parameter_self_judge_prompt_gemini
     elif prompt_type == "result_judge":
         template = result_judge_prompt
+    elif prompt_type == "result_judge_gemini":
+        template = result_judge_prompt_gemini
     elif prompt_type == "api_call":
         template = api_call_prompt
     elif prompt_type == "slurm":
@@ -43,6 +58,20 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
     pm = kwargs.get("previous_memory", "")
     if pm is not None and str(pm) != "":
         kwargs["previous_memory"] = "\n ### Memory of previous subproblems\n" + str(pm) + "\n"
+    # ----------------------------------------
+    # --- inject header for attempt_history ---
+    ah = kwargs.get("attempt_history", "")
+    if ah is not None and str(ah) != "":
+        kwargs["attempt_history"] = "\n ### Attempt history for this same subproblem\n" + str(ah) + "\n"
+    else:
+        kwargs["attempt_history"] = ""
+    # ----------------------------------------
+    # --- inject header for category_reference_sample ---
+    crs = kwargs.get("category_reference_sample", "")
+    if crs is not None and str(crs) != "":
+        kwargs["category_reference_sample"] = "\n ### Category reference sample (context only; do not copy blindly)\n" + str(crs) + "\n"
+    else:
+        kwargs["category_reference_sample"] = ""
     # ----------------------------------------
     # --- inject header for initial_structures ---
     # qi = kwargs.get("initial_structures", "")
