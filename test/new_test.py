@@ -13,7 +13,6 @@ from DFTAgent import DFTAgent
 
 def main():
     parser = argparse.ArgumentParser(description="Run DFT Agent with a query")
-    parser.add_argument("query", help="The DFT query to execute")
     parser.add_argument("--model", default="gpt-4o", help="Model name (default: gpt-4o)")
     parser.add_argument("--backend", default="auto", help="Backend: auto, openai, claude, gemini, vllm, hf (default: auto)")
     parser.add_argument("--dft-tool", default="quantum espresso", help="DFT tool (default: quantum espresso)")
@@ -121,13 +120,6 @@ def main():
     query = "Perform a vc-relax calculation for tetragonal BaTiO3 (space group P4mm, #99) using the PBE functional with PAW pseudopotentials."\
     " Use a 6x6x6 Monkhorst-Pack k-point grid and a plane-wave cutoff energy of 650 eV. "\
     "Return the relaxed lattice parameters and atomic positions."
-
-    agent = DFTAgent(**agent_kwargs)
-    result = agent.run(
-        args.query,
-        run_id=args.run_id,
-        category=args.category,
-    )
 
     query = "For material = Al with space group Fm-3m and structure = FCC using the primitive cell, \
     perform a variable-cell relaxation (vc-relax) calculation with exchange-correlation functional = LDA. \
