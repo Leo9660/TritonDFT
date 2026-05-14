@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=2048,
+        default=16384,
         help="Maximum tokens for each model call inside DFTAgent.",
     )
     parser.add_argument(
@@ -91,15 +91,24 @@ def parse_args() -> argparse.Namespace:
         help="Pseudopotential family guidance passed to BenchmarkDataset (LDA, PBE, PBE_sol).",
     )
     parser.add_argument(
-        "--difficulty",
-        default="all",
-        choices=["simple", "intermediate", "complex", "all"],
-        help="Material difficulty subset to load from benchmark materials.",
+        "--category",
+        default="metal",
+        help="Material category passed to BenchmarkDataset.",
+    )
+    parser.add_argument(
+        "--start-from-type",
+        default="",
+        help="Skip prompts until a task with this type is encountered (matches DataItem.task).",
+    )
+    parser.add_argument(
+        "--start-from-id",
+        default="",
+        help="Skip prompts until this material ID is encountered (matches metadata.material_id or DataItem.id).",
     )
     parser.add_argument(
         "--task-type",
         default="all",
-        choices=["vcrelax", "all"],
+        choices=["band_gap", "vc_relax", "all", "dos"],
         help="Task type filter for benchmark questions.",
     )
     parser.add_argument(
@@ -140,10 +149,10 @@ def parse_args() -> argparse.Namespace:
 def collect_prompts(
     limit: int,
     pseudopotential_family: str,
-    difficulty: str,
+    category: str,
     task_type: str,
 ) -> List[DataItem]:
-    dataset = BenchmarkDataset(difficulty=difficulty, task_type=task_type)
+    dataset = BenchmarkDataset(category=category, task_type=task_type)
     prompts = []
     for task in dataset.tasks:
         prompts.extend(
@@ -186,7 +195,11 @@ def build_agent(args: argparse.Namespace) -> DFTAgent:
 
 def main() -> None:
     args = parse_args()
-    prompts = collect_prompts(args.limit, args.pseudo, args.difficulty, args.task_type)
+    prompts = collect_prompts(args.limit, args.pseudo, args.category, args.task_type)
+
+    start_from_type = (args.start_from_type or "").strip()
+    start_from_id = (args.start_from_id or "").strip()
+    started = not (start_from_type or start_from_id)
 
     if not prompts:
         print("No prompts collected from BenchmarkDataset. Exiting.")
@@ -196,22 +209,45 @@ def main() -> None:
 
     for idx, item in enumerate(prompts, start=1):
         header = f"[{idx}/{len(prompts)}][{item.task}]"
+        material_info = (
+            item.metadata.get("material_info", {}) if isinstance(item.metadata, dict) else {}
+        )
+        material_name = material_info.get("formula") or material_info.get("name") or ""
+        material_structure = material_info.get("structure", "")
+        category = (
+            item.metadata.get("category", "") if isinstance(item.metadata, dict) else ""
+        ) or args.category
+        material_id = ""
+        if isinstance(item.metadata, dict):
+            # Preserve the material_id exactly as provided in the source JSON.
+            material_id = item.metadata.get("material_id", "")
+        if not started:
+            # type_match = (not start_from_type) or item.task == start_from_type
+            # id_match = (not start_from_id) or int(start_from_id) in {material_id, item.id}
+            # print(item.task, material_id, item.id, type_match, id_match)
+            # started = type_match and id_match
+            if start_from_type and start_from_id:
+                started = f"{start_from_type}_{start_from_id}" == material_id
+            else:
+                started = True
+            print(f"Skipping prompt {item.task} {material_id or item.id}...")
+            if not started:
+                continue
         print(f"{header} Prompt (pseudo={args.pseudo}):\n{item.prompt}\n")
+        print(
+            f"{header} TaskType={item.task} | Material={material_name or 'unknown'} | Category={category} | MaterialID={material_id} | Structure={material_structure or 'unknown'}"
+        )
         if args.dry_run:
             continue
 
         try:
-            material_name = (
-                item.metadata.get("material_info", {}).get("name", "")
-                if isinstance(item.metadata, dict)
-                else ""
-            )
             result = agent.run(
                 item.prompt,
                 run_id=idx,
-                difficulty=args.difficulty,
+                category=category,
                 task_type=args.task_type,
                 material_name=material_name,
+                work_dir=f"/data/icml_test_bed/{args.model}/{category}_{material_id}",
             )
             print(f"{header} Result: {result}\n")
         except Exception as exc:  # pylint: disable=broad-except

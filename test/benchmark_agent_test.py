@@ -17,16 +17,10 @@ def parse_args() -> argparse.Namespace:
         description="Run DFTAgent on prompts generated from the BenchmarkDataset."
     )
     parser.add_argument(
-        "--tasks",
-        nargs="+",
-        default="vc_relax",
-        help="Subset of benchmark tasks to evaluate (defaults to every registered task).",
-    )
-    parser.add_argument(
         "--limit",
         type=int,
-        default=3,
-        help="Maximum number of prompts to evaluate across all tasks.",
+        default=0,
+        help="Maximum number of prompts to evaluate across all tasks (0 = no limit).",
     )
     parser.add_argument(
         "--model",
@@ -96,28 +90,72 @@ def parse_args() -> argparse.Namespace:
         default="LDA",
         help="Pseudopotential family guidance passed to BenchmarkDataset (LDA, PBE, PBE_sol).",
     )
+    parser.add_argument(
+        "--difficulty",
+        default="all",
+        choices=["simple", "intermediate", "complex", "all"],
+        help="Material difficulty subset to load from benchmark materials.",
+    )
+    parser.add_argument(
+        "--task-type",
+        default="all",
+        choices=["vcrelax", "all"],
+        help="Task type filter for benchmark questions.",
+    )
+    parser.add_argument(
+        "--run-mode",
+        default="mpirun",
+        choices=["mpirun", "local", "slurm"],
+        help="Execution mode for QE runs.",
+    )
+    parser.add_argument(
+        "--parallel-np",
+        type=int,
+        default=1,
+        help="MPI ranks for mpirun or Slurm runs.",
+    )
+    parser.add_argument(
+        "--auto-parallel",
+        action="store_true",
+        help="Enable auto-parallel probing and command generation.",
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Enable benchmark logging to CSV.",
+    )
+    parser.add_argument(
+        "--benchmark-file",
+        default="benchmark.csv",
+        help="CSV file for benchmark outputs.",
+    )
+    parser.add_argument(
+        "--hardware-description",
+        default=None,
+        help="Optional hardware description passed to auto-parallel prompt.",
+    )
     return parser.parse_args()
 
 
 def collect_prompts(
-    tasks: Optional[List[str]],
     limit: int,
     pseudopotential_family: str,
+    difficulty: str,
+    task_type: str,
 ) -> List[DataItem]:
-    dataset = BenchmarkDataset()
-    target_tasks = tasks or dataset.tasks
+    dataset = BenchmarkDataset(difficulty=difficulty, task_type=task_type)
     prompts = []
-    for task in target_tasks:
+    for task in dataset.tasks:
         prompts.extend(
             dataset.collect(
                 task_name=task,
                 pseudopotential_family=pseudopotential_family,
             )
         )
-        if len(prompts) >= limit:
+        if limit > 0 and len(prompts) >= limit:
             break
         print(f"Prompt {len(prompts)} collected from task {task}, {prompts[-1]}.")
-    return prompts[:limit]
+    return prompts if limit == 0 else prompts[:limit]
 
 
 def build_agent(args: argparse.Namespace) -> DFTAgent:
@@ -136,12 +174,18 @@ def build_agent(args: argparse.Namespace) -> DFTAgent:
         output_log_file="benchmark_agent.log",
         openai_api_key=args.openai_api_key,
         openai_base_url=args.openai_base_url,
+        run_mode=args.run_mode,
+        parallel_np=args.parallel_np,
+        auto_parallel=args.auto_parallel,
+        benchmark=args.benchmark,
+        benchmark_file=args.benchmark_file,
+        hardware_description=args.hardware_description,
     )
 
 
 def main() -> None:
     args = parse_args()
-    prompts = collect_prompts(args.tasks, args.limit, args.pseudo)
+    prompts = collect_prompts(args.limit, args.pseudo, args.difficulty, args.task_type)
 
     if not prompts:
         print("No prompts collected from BenchmarkDataset. Exiting.")
@@ -156,7 +200,18 @@ def main() -> None:
             continue
 
         try:
-            result = agent.run(item.prompt)
+            material_name = (
+                item.metadata.get("material_info", {}).get("name", "")
+                if isinstance(item.metadata, dict)
+                else ""
+            )
+            result = agent.run(
+                item.prompt,
+                run_id=idx,
+                difficulty=args.difficulty,
+                task_type=args.task_type,
+                material_name=material_name,
+            )
             print(f"{header} Result: {result}\n")
         except Exception as exc:  # pylint: disable=broad-except
             print(f"{header} Failed with error: {exc}\n")
