@@ -24,8 +24,13 @@ evaluation.log
 test_benchmark/output*
 benchmark/output*
 
-# Local configs that should not leak into image
+# Local configs / secrets that must NOT leak into image
 config/config.yaml
+.env
+.env.*
+!.env.example
+k8s/secret.yaml
+k8s/postgres.yaml
 
 # Large pseudopotential dir — mount via PVC instead if needed
 # (Comment the next line out if you DO want pseudos baked in)
