@@ -12,11 +12,11 @@ except ImportError as exc:
     raise ImportError("PyYAML is required to load config.yaml; install it via `pip install pyyaml`.") from exc
 
 DEFAULT_PSEUDO_DIRS = {
-    "LDA": "../PseudoDojo/SR_v0.4.1/LDA_standard",
-    "PBE": "../PseudoDojo/SR_v0.4.1/PBE_standard",
-    "PBESOL": "../PseudoDojo/SR_v0.4.1/PBEsol_standard",
-    "PBE_FR": "../PseudoDojo/SR_v0.4.1/PBE_fr",
-    "PBESOL_FR": "../PseudoDojo/SR_v0.4.1/PBEsol_fr",
+    "LDA": "PseudoDojo/SR_v0.4.1/LDA_standard",
+    "PBE": "PseudoDojo/SR_v0.4.1/PBE_standard",
+    "PBESOL": "PseudoDojo/SR_v0.4.1/PBEsol_standard",
+    "PBE_FR": "PseudoDojo/SR_v0.4.1/PBE_fr",
+    "PBESOL_FR": "PseudoDojo/SR_v0.4.1/PBEsol_fr",
 }
 DEFAULT_QE_BIN_DIR = "QuantumE/bin"
 
@@ -76,9 +76,21 @@ class Config:
             pseudo_section = {}
             qe_bin_dir = None
 
+        # Resolve every pseudo dir against repo_root so pw.x finds them
+        # regardless of how deeply the run's cwd is nested (e.g. when
+        # work_dir is /workspace/tmp/<date>/<run>/ — 3 levels deep).
+        pseudo = PseudoPaths.from_dict(pseudo_section)
+        pseudo = PseudoPaths(
+            LDA=str((repo_root / pseudo.LDA).resolve()) if not Path(pseudo.LDA).is_absolute() else pseudo.LDA,
+            PBE=str((repo_root / pseudo.PBE).resolve()) if not Path(pseudo.PBE).is_absolute() else pseudo.PBE,
+            PBESOL=str((repo_root / pseudo.PBESOL).resolve()) if not Path(pseudo.PBESOL).is_absolute() else pseudo.PBESOL,
+            PBE_FR=str((repo_root / pseudo.PBE_FR).resolve()) if not Path(pseudo.PBE_FR).is_absolute() else pseudo.PBE_FR,
+            PBESOL_FR=str((repo_root / pseudo.PBESOL_FR).resolve()) if not Path(pseudo.PBESOL_FR).is_absolute() else pseudo.PBESOL_FR,
+        )
+
         final_qe_bin = qe_bin_dir or str((repo_root / DEFAULT_QE_BIN_DIR).resolve())
         return cls(
-            pseudo=PseudoPaths.from_dict(pseudo_section),
+            pseudo=pseudo,
             qe_bin_dir=final_qe_bin,
             path=path,
         )
