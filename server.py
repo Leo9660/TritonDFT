@@ -95,7 +95,9 @@ agent = DFTAgent(
     dft_tool="quantum espresso",
     verbose=True,
     backend="openai",
-    work_dir="",
+    # PVC mount (rook-cephfs); ephemeral container fs (/workspace) is lost on
+    # pod restart, which made post-mortem debugging of pw.x crashes impossible.
+    work_dir="/workspace/tmp",
     max_new_tokens=4096,
     temperature=0.0,
     top_p=0.9,
