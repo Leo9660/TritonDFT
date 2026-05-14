@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tritondft
+  namespace: datahub-llm
+  labels:
+    k8s-app: tritondft
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate               # DFT jobs read/write the same PVC; avoid two pods writing simultaneously
+  selector:
+    matchLabels:
+      k8s-app: tritondft
+  template:
+    metadata:
+      labels:
+        k8s-app: tritondft
+    spec:
+      priorityClassName: opportunistic
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: feature.node.kubernetes.io/pci-10de.present
+                operator: NotIn
+                values: ["true"]
+      containers:
+      - name: tritondft
+        image: docker.io/yil384/tritondft:v1
+        imagePullPolicy: IfNotPresent
+        command: ["uvicorn"]
+        args:
+          - "server:app"
+          - "--host=0.0.0.0"
+          - "--port=8000"
+        ports:
+        - name: http
+          containerPort: 8000
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: OPENAI_API_KEY } }
+        - name: MP_API_KEY
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: MP_API_KEY } }
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: DATABASE_URL } }
+        - name: JWT_SECRET
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: JWT_SECRET } }
+        - name: ADMIN_EMAILS
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: ADMIN_EMAILS } }
+        - name: RESEND_API_KEY
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: RESEND_API_KEY } }
+        - name: EMAIL_FROM
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: EMAIL_FROM } }
+        - name: FRONTEND_BASE_URL
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: FRONTEND_BASE_URL } }
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: OMP_NUM_THREADS
+          value: "1"
+        resources:
+          requests:
+            cpu: "8"
+            memory: "16Gi"
+          limits:
+            cpu: "24"
+            memory: "64Gi"
+        volumeMounts:
+        - name: workdir
+          mountPath: /workspace/tmp
+        - name: dshm
+          mountPath: /dev/shm
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 30
+      volumes:
+      - name: workdir
+        persistentVolumeClaim:
+          claimName: tritondft-workdir
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi

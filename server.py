@@ -1,25 +1,93 @@
 import sys
 from pathlib import Path
 import os
+import re
 import threading
-from queue import Queue
+from queue import Queue, Empty
 import time
 import random
 
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+# Load .env in local dev. In NRP the values come from k8s Secrets (env block).
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 ROOT = Path(__file__).resolve().parents[0]
 sys.path.insert(0, str(ROOT / "src"))
 
 from DFTAgent import DFTAgent
+from db import init_db, get_session, SessionLocal, User
+from auth import router as auth_router, get_current_user
+from admin import router as admin_router
+from credits import count_tokens, pre_charge, reconcile
+
+# ============================================================
+# Rate-limit configuration
+# ============================================================
+
+MAX_MESSAGE_CHARS = 4000
+MAX_CONVERSATION_CHARS = 16000
+REQUEST_TIMEOUT_S = 300
+MAX_OUTPUT_TOKENS = 4096   # worst-case for pre-charge
+
+PER_IP_RATE = "5/minute;30/day"
+agent_lock = threading.Lock()
+
+
+def get_real_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+limiter = Limiter(key_func=get_real_ip, default_limits=[])
+
+# ============================================================
+# App
+# ============================================================
 
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ========== 初始化 ==========
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def _on_startup():
+    _, err = init_db()
+    if err:
+        # Don't crash the app; admin can inspect logs and fix DB.
+        # Auth endpoints will surface DB errors directly.
+        print(f"[startup] init_db failed: {err}")
+    else:
+        print("✅ DB initialized (tables + admin seed)")
+
+
+app.include_router(auth_router)
+app.include_router(admin_router)
+
+# ========== Agent init ==========
 agent = DFTAgent(
     model="gpt-4o",
     dft_tool="quantum espresso",
@@ -31,42 +99,40 @@ agent = DFTAgent(
     top_p=0.9,
     need_query_info=True,
     parallel_exec=True,
-    parallel_np=12
+    parallel_np=12,
 )
 
 print("✅ DFT Agent Loaded")
 
 
 class ChatRequest(BaseModel):
-    messages: list   # 跟 OpenAI 保持一致格式
+    messages: list
 
 
 def extract_user_message(messages):
-    """取最后一条用户消息"""
     for msg in reversed(messages):
         if msg["role"] == "user":
             return msg["content"]
     return messages[-1]["content"]
 
 
-def stream_generator(query: str):
-    """
-    把所有 stdout / stderr 全部劫持
-    不再使用 agent.stream
-    只使用 agent.run
-    """
-
+def stream_generator(query: str, deadline: float, user_id, log_id):
+    """Stream agent stdout/stderr; on completion, reconcile credit refund."""
     q = Queue()
+    old_stdout, old_stderr = sys.stdout, sys.stderr
 
-    # 保存原有输出方式
-    old_stdout = sys.stdout
-    old_stderr = sys.stderr
+    tqdm_re = re.compile(r"\d+%\s*\|.*?\|\s*\d+/\d+\s*\[")
+    blank_re = re.compile(r"^[\s\r\n]*$")
+    yielded_chunks = []
 
-    # 自定义捕获器
     class StreamCatcher:
         def write(self, text):
-            if text:
-                q.put(text)
+            if not text or tqdm_re.search(text) or blank_re.match(text):
+                return
+            cleaned = text.replace("\r", "")
+            if cleaned:
+                q.put(cleaned)
+
         def flush(self):
             pass
 
@@ -75,45 +141,135 @@ def stream_generator(query: str):
 
     def run_agent():
         try:
-            agent.run(query)   # ✅ 直接运行，不用 stream
+            agent.run(query)
         except Exception as e:
             q.put(f"\n[ERROR] {str(e)}\n")
         finally:
-            q.put(None)        # 🔚 结束标识
+            q.put(None)
 
-    t = threading.Thread(target=run_agent)
+    t = threading.Thread(target=run_agent, daemon=True)
     t.start()
 
     try:
         while True:
-            msg = q.get()
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                yield "\n\n[TIMEOUT] Request exceeded 5 minute limit. Aborted.\n"
+                yielded_chunks.append("[TIMEOUT]")
+                break
+            try:
+                msg = q.get(timeout=min(remaining, 1.0))
+            except Empty:
+                continue
 
             if msg is None:
                 break
 
-            # yield f"{msg}\n\n"
-            # 逐字流式输出（ChatGPT风格）
-            for ch in str(msg):
+            text = str(msg)
+            yielded_chunks.append(text)
+            for ch in text:
                 yield ch
-                time.sleep(random.uniform(0.001, 0.01))  # 人类抖动
-            yield "\n\n"
+                time.sleep(random.uniform(0.001, 0.005))
+            yield "\n"
 
     finally:
-        # 恢复 stdout
         sys.stdout = old_stdout
         sys.stderr = old_stderr
+        # Reconcile: refund unused output budget
+        try:
+            actual_output_text = "".join(yielded_chunks)
+            actual_tokens, _ = count_tokens(actual_output_text)
+            db = SessionLocal()
+            try:
+                _, err = reconcile(db, log_id, user_id, actual_tokens)
+                if err:
+                    print(f"[credits] reconcile failed: {err}")
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"[credits] reconcile exception: {e}")
+
+        if agent_lock.locked():
+            try:
+                agent_lock.release()
+            except RuntimeError:
+                pass
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
+@limiter.limit(PER_IP_RATE)
+async def chat_completions(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
     body = await request.json()
     messages = body.get("messages", [])
 
-    query = extract_user_message(messages)
+    # ---- Input size cap ----
+    total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+    if total_chars > MAX_CONVERSATION_CHARS:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": "conversation_too_long",
+                "message": f"Conversation history is too long ({total_chars} > {MAX_CONVERSATION_CHARS} chars).",
+            },
+        )
 
-    print(f"\n📩 Incoming query:\n{query}\n")
+    user_msg = extract_user_message(messages)
+    if len(user_msg) > MAX_MESSAGE_CHARS:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": "message_too_long",
+                "message": f"Message is too long ({len(user_msg)} > {MAX_MESSAGE_CHARS} chars).",
+            },
+        )
 
+    # ---- Credits: pre-charge worst case ----
+    full_input_text = "\n".join(str(m.get("content", "")) for m in messages)
+    input_tokens, _ = count_tokens(full_input_text)
+    log, err = pre_charge(
+        db, user, input_tokens, MAX_OUTPUT_TOKENS, endpoint="/v1/chat/completions"
+    )
+    if err:
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error": "insufficient_credits",
+                "message": err,
+                "credits_remaining": user.credits,
+            },
+        )
+
+    user_id = user.id
+    log_id = log.id
+
+    # ---- Global concurrency: one agent run at a time ----
+    if not agent_lock.acquire(blocking=False):
+        # Refund the pre-charge since we're not running
+        try:
+            reconcile(db, log_id, user_id, 0)
+        except Exception:
+            pass
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "agent_busy",
+                "message": "Another DFT job is currently running. Please try again in a minute.",
+            },
+        )
+
+    print(f"\n📩 Incoming query from {user.email} (IP={get_real_ip(request)}):\n{user_msg}\n")
+
+    deadline = time.time() + REQUEST_TIMEOUT_S
     return StreamingResponse(
-        stream_generator(query),
-        media_type="text/plain"
+        stream_generator(user_msg, deadline, user_id, log_id),
+        media_type="text/plain",
     )
