@@ -1,18 +1,19 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from db import get_session, User, UsageLog, AuditLog
 from auth import get_current_user
+import errors
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_admin:
-        raise HTTPException(status_code=403, detail="admin_required")
+        raise errors.admin_required()
     return user
 
 
@@ -54,7 +55,7 @@ async def update_user(
 ):
     user = db.query(User).filter(User.email == email.lower().strip()).first()
     if user is None:
-        raise HTTPException(status_code=404, detail="user_not_found")
+        raise errors.admin_user_not_found()
 
     before = {
         "credits": user.credits,
@@ -91,7 +92,7 @@ async def user_usage(
 ):
     user = db.query(User).filter(User.email == email.lower().strip()).first()
     if user is None:
-        raise HTTPException(status_code=404, detail="user_not_found")
+        raise errors.admin_user_not_found()
     logs = (
         db.query(UsageLog)
         .filter(UsageLog.user_id == user.id)

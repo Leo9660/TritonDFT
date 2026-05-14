@@ -29,10 +29,14 @@ def estimate_cost(input_tokens: int, output_tokens: int):
 
 
 def pre_charge(db: Session, user: User, input_tokens: int, max_output_tokens: int, endpoint: str):
-    """Pre-deduct worst-case credits. Returns (UsageLog, None) or (None, err)."""
+    """Pre-deduct worst-case credits.
+
+    Returns (UsageLog, None) on success, or (None, {"needed": int, "remaining": int})
+    when the user lacks credits — caller maps this to errors.insufficient_credits.
+    """
     cost, _ = estimate_cost(input_tokens, max_output_tokens)
     if not user.is_unlimited and user.credits < cost:
-        return None, f"insufficient_credits: need {cost}, have {user.credits}"
+        return None, {"needed": cost, "remaining": user.credits}
     if not user.is_unlimited:
         user.credits -= cost
     log = UsageLog(

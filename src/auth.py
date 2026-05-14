@@ -3,13 +3,14 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, Cookie
+from fastapi import APIRouter, Depends, Request, Response, Cookie
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 
 from db import get_session, User, MagicLink
 from email_sender import send_magic_link_email
+import errors
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -82,15 +83,15 @@ def get_current_user(
 ) -> User:
     token = _extract_token(request, cookie)
     if not token:
-        raise HTTPException(status_code=401, detail="not_authenticated")
+        raise errors.not_authenticated()
     email, err = verify_jwt(token)
     if err or not email:
-        raise HTTPException(status_code=401, detail="invalid_token")
+        raise errors.invalid_token()
     user = db.query(User).filter(User.email == email).first()
     if user is None:
-        raise HTTPException(status_code=401, detail="user_not_found")
+        raise errors.user_not_found()
     if user.is_banned:
-        raise HTTPException(status_code=403, detail="banned")
+        raise errors.banned()
     return user
 
 
@@ -114,7 +115,7 @@ async def request_link(body: RequestLinkBody, db: Session = Depends(get_session)
         db.add(user)
         db.flush()
     if user.is_banned:
-        raise HTTPException(status_code=403, detail="banned")
+        raise errors.banned()
 
     token = secrets.token_urlsafe(32)
     db.add(MagicLink(
@@ -141,24 +142,24 @@ async def verify_magic_link(
 ):
     ml = db.query(MagicLink).filter(MagicLink.token == token).first()
     if ml is None:
-        raise HTTPException(status_code=400, detail="invalid_token")
+        raise errors.magic_link_invalid()
     if ml.used:
-        raise HTTPException(status_code=400, detail="token_already_used")
+        raise errors.magic_link_used()
     if ml.expires_at < datetime.utcnow():
-        raise HTTPException(status_code=400, detail="token_expired")
+        raise errors.magic_link_expired()
 
     ml.used = True
     user = db.query(User).filter(User.email == ml.email).first()
     if user is None:
-        raise HTTPException(status_code=400, detail="user_not_found")
+        raise errors.user_not_found()
     if user.is_banned:
-        raise HTTPException(status_code=403, detail="banned")
+        raise errors.banned()
     user.last_login_at = datetime.utcnow()
     db.commit()
 
     jwt_token, err = issue_jwt(user.email)
     if err:
-        raise HTTPException(status_code=500, detail=f"jwt_error: {err}")
+        raise errors.jwt_signing_failed(err)
 
     # Best-effort cookie (works only if same-site). Frontend should also store
     # the returned token and send Authorization: Bearer for cross-origin.

@@ -28,7 +28,7 @@ spec:
                 values: ["true"]
       containers:
       - name: tritondft
-        image: docker.io/yil384/tritondft:v6
+        image: docker.io/yil384/tritondft:v7
         imagePullPolicy: IfNotPresent
         command: ["uvicorn"]
         args:
