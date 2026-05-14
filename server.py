@@ -37,8 +37,9 @@ import errors
 # Rate-limit configuration
 # ============================================================
 
-MAX_MESSAGE_CHARS = 4000
-MAX_CONVERSATION_CHARS = 16000
+MAX_MESSAGE_CHARS = 8000          # per-message cap (the only one the agent actually sees)
+MAX_CONVERSATION_CHARS = 2_000_000  # raw payload guard only — agent uses just the latest user msg,
+                                    # so huge histories from streamed agent logs are harmless
 REQUEST_TIMEOUT_S = 300
 MAX_OUTPUT_TOKENS = 4096   # worst-case for pre-charge
 
