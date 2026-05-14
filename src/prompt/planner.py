@@ -16,7 +16,12 @@ planner_messages = {
     - Do not output anything outside <subproblem> blocks.
 
     Core rules:
-    Allowed tools: pw_scf, pw_nscf, pw_relax, pw_vc_relax, pw_bands, bands_post, dos_post, projwfc_post, pp_post, q2r_post, matdyn_post, pw_phonon_gamma, elastic_post.
+    Allowed tools: pw_scf, pw_nscf, pw_relax, pw_vc_relax, pw_bands, bands_post, dos_post, projwfc_post, pp_post, q2r_post, matdyn_post, dynmat_post, pw_phonon_gamma, elastic_post.
+
+    Phonon post-processing rule:
+    - Use `matdyn_post` ONLY for full phonon dispersion / DOS along q-paths, and only AFTER `q2r_post` has produced real-space force constants (flfrc).
+    - Use `dynmat_post` for a SINGLE-q (e.g. Gamma-only) ph.x dynamical matrix file (.dynG / .dyn). Do NOT pair `dynmat_post` with `q2r_post`.
+    - For a Gamma-only stability check, ph.x already prints frequencies in cm-1 in its own output; an additional dynmat_post step is optional, not mandatory.
 
     <|user|>
     You are a senior Quantum ESPRESSO planner.
