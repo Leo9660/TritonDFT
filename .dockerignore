@@ -1,0 +1,36 @@
+# VCS / IDE
+.git
+.gitignore
+.gitmodules
+.vscode
+.idea
+
+# Python build artifacts
+**/__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.venv
+venv
+
+# Local QE build (we rebuild inside image)
+QuantumE
+
+# Workspace outputs and logs
+tmp
+job_*
+evaluation.log
+2026-*
+test_benchmark/output*
+benchmark/output*
+
+# Local configs that should not leak into image
+config/config.yaml
+
+# Large pseudopotential dir — mount via PVC instead if needed
+# (Comment the next line out if you DO want pseudos baked in)
+# PseudoDojo
+
+# OS
+.DS_Store
+Thumbs.db

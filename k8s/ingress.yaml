@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tritondft-ingress
+  namespace: datahub-llm
+  annotations:
+    haproxy-ingress.github.io/timeout-server: "600s"
+    haproxy-ingress.github.io/timeout-client: "600s"
+    haproxy-ingress.github.io/proxy-body-size: "100m"
+spec:
+  ingressClassName: haproxy
+  rules:
+  - host: tritondft.nrp-nautilus.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: tritondft-svc
+            port:
+              number: 8080
+  tls:
+  - hosts:
+    - tritondft.nrp-nautilus.io

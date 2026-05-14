@@ -12,3 +12,11 @@ PyYAML
 anthropic
 google-generativeai
 tiktoken
+slowapi
+# Auth + DB + email
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
+python-jose[cryptography]
+pydantic[email]
+resend
+python-dotenv
