@@ -128,7 +128,7 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
                     min_subid = i
                     # print(f"New min ehull: {ehull_min} for {min_id} (subid {min_subid})")
 
-    retrieved_structure = mpr.get_structure_by_material_id(min_id)
+    retrieved_structure = relaxed_lookup.get(min_id)
     # 使用 SpacegroupAnalyzer 进行标准化处理
     sga = SpacegroupAnalyzer(retrieved_structure)
 

@@ -48,6 +48,7 @@ ALLOWED_FNS: Set[str] = {
     "pp_post",
     "q2r_post",
     "matdyn_post",
+    "dynmat_post",
     "pw_phonon_gamma",
 }
 
@@ -145,8 +146,20 @@ FN_MAP: Dict[str, ToolSpec] = {
         exec="matdyn.x",
         required=(),
         optional=("asr", "dos", "q_in_cryst_coord", "q_path", "flfrc", "fldos", "flfrq"),
-        description="Phonon frequencies / DOS along paths",
+        description="Phonon frequencies / DOS along paths (DISPERSION post-processing only). "
+                    "Reads real-space force constants (flfrc) produced by q2r.x. "
+                    "Do NOT use this for a single-q (e.g. Gamma-only) ph.x output — use dynmat_post instead.",
         section="&input (minimal). Reads real-space force constants from q2r.x output."
+    ),
+    "dynmat_post": ToolSpec(
+        exec="dynmat.x",
+        required=(),
+        optional=("asr", "fildyn", "filout", "filmol", "filxsf", "q", "amass"),
+        description="Process a SINGLE-q dynamical matrix from ph.x (e.g. Gamma) into "
+                    "frequencies and eigenvectors. Use this (NOT matdyn_post) when you have "
+                    "a ph.x .dynG / .dyn file for one q-point and no q2r.x step.",
+        section="&input namelist. fildyn must point at the ph.x output dynamical matrix "
+                "file (e.g. prefix.dynG for Gamma)."
     ),
     "pw_phonon_gamma": ToolSpec(
         exec="ph.x",

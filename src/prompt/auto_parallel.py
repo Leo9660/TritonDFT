@@ -18,10 +18,19 @@ Your goal is to choose the optimal Hybrid MPI/OpenMP configuration (`OMP_NUM_THR
 
 3. **General Optimization Strategy (Reasoning Required)**:
    - **Assess System Scale**: Look at `nat` (number of atoms) and `k-points` in the input.
-   - **The "Overhead" Trade-off**: 
+   - **The "Overhead" Trade-off**:
      - For **Small Systems** (few atoms), MPI communication overhead often outweighs the benefit of complex parallelization logic. Excessive splitting (high `-nb`, `-ntg` or OpenMP) can degrade performance.
      - For **Large Systems** (many atoms), calculation and memory are the bottlenecks. Advanced flags (`-ntg`, `-nb`) and Hybrid MPI/OpenMP become essential to scale.
    - **Decision Process**: Balance the need for parallelism against the cost of communication.
+
+4. **Common Anti-Patterns (DO NOT do these)**:
+   - **Avoid `-nk == -np`**: Setting the number of pools equal to the number of MPI ranks puts only 1 rank per pool, which kills all plane-wave / G-vector parallelism inside each k-point. As a rule, keep `-np / -nk >= 4` so each pool retains intra-pool parallelism. If the IBZ k-points (after symmetry reduction) is small, prefer a smaller `-nk` (e.g., `-nk 4` or `-nk 8`).
+   - **Avoid `OMP_NUM_THREADS > 1` for medium systems**: For `nat <= 40` with `ecutwfc <= 80`, the FFT grid is too small for OpenMP threads to amortize their synchronization cost; pure MPI (`OMP_NUM_THREADS=1`) almost always wins. Only consider `OMP > 1` for `nat > 60` or `ecutwfc > 100`, or when memory-per-rank is tight.
+   - **Fall back to baseline when nothing to optimize**: Inspect the probe output. If ALL of these hold, it means the baseline already saturates the hardware and any tweak will only add overhead — in that case, output a command identical to the baseline (`OMP_NUM_THREADS=1`, full MPI ranks, no `-nk -nb -ntg`):
+     (a) Probe `WALL` time matches `CPU` time within ~10% (no idle ranks).
+     (b) Number of k-points ≤ MPI ranks (each rank already processes ≤ 1 k-point on average).
+     (c) `nat <= 40` and `ecutwfc <= 80` (FFT grid is small, no headroom for `-ntg`).
+     (d) The dominant cost in the probe is `h_psi` / `vloc_psi` / `fftw` (compute-bound, not communication-bound).
 
 # Inputs
 1) QE input script (verbatim):
