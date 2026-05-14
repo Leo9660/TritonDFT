@@ -118,12 +118,18 @@ def extract_user_message(messages):
 
 
 def stream_generator(query: str, deadline: float, user_id, log_id):
-    """Stream agent stdout/stderr; on completion, reconcile credit refund."""
+    """Stream agent stdout/stderr; on completion, reconcile credit refund.
+
+    Also tees agent output to the real pod stderr so kubectl logs is useful
+    for debugging — lines matching error patterns are flagged with a prefix
+    so they're easy to grep.
+    """
     q = Queue()
     old_stdout, old_stderr = sys.stdout, sys.stderr
 
     tqdm_re = re.compile(r"\d+%\s*\|.*?\|\s*\d+/\d+\s*\[")
     blank_re = re.compile(r"^[\s\r\n]*$")
+    err_re = re.compile(r"\[error\]|\[exception\]|\[fatal\]|Traceback", re.IGNORECASE)
     yielded_chunks = []
 
     class StreamCatcher:
@@ -133,6 +139,14 @@ def stream_generator(query: str, deadline: float, user_id, log_id):
             cleaned = text.replace("\r", "")
             if cleaned:
                 q.put(cleaned)
+                # Tee to real pod stderr so debugging via `kubectl logs` works.
+                # Tag error-ish lines with a marker so they're easy to grep.
+                prefix = "AGENT-ERR " if err_re.search(cleaned) else "AGENT "
+                try:
+                    old_stderr.write(prefix + cleaned if cleaned.endswith("\n") else prefix + cleaned + "\n")
+                    old_stderr.flush()
+                except Exception:
+                    pass
 
         def flush(self):
             pass
@@ -144,6 +158,13 @@ def stream_generator(query: str, deadline: float, user_id, log_id):
         try:
             agent.run(query)
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            try:
+                old_stderr.write(f"AGENT-CRASH agent.run() raised:\n{tb}\n")
+                old_stderr.flush()
+            except Exception:
+                pass
             q.put(f"\n\n> ⚠️ **The agent hit an error and stopped.**\n> {str(e)}\n")
         finally:
             q.put(None)
