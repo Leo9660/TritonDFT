@@ -26,6 +26,10 @@ DFTagent automates the setup of Quantum ESPRESSO (QE) calculations by letting a 
 - Upgrade pip and install the required packages: `pip install --upgrade pip && pip install -r requirements.txt`. The list covers `numpy`, `torch`, `transformers`, `openai`, `mp-api`, and `pymatgen`. Install `vllm` separately if you plan to use the vLLM backend.
 
 ## Quantum ESPRESSO setup
+0. [Optional] OpenMPI and MKL for High-Performance Execution
+   apt-get install -y libopenmpi-dev openmpi-bin
+   conda install -c conda-forge mkl mkl-devel mkl-include
+
 1. Initialize/update the bundled QE submodule (this populates `./QuantumE/`):
    ```
    git submodule update --init --recursive
