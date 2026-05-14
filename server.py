@@ -31,6 +31,7 @@ from db import init_db, get_session, SessionLocal, User
 from auth import router as auth_router, get_current_user
 from admin import router as admin_router
 from credits import count_tokens, pre_charge, reconcile
+import errors
 
 # ============================================================
 # Rate-limit configuration
@@ -143,7 +144,7 @@ def stream_generator(query: str, deadline: float, user_id, log_id):
         try:
             agent.run(query)
         except Exception as e:
-            q.put(f"\n[ERROR] {str(e)}\n")
+            q.put(f"\n\n> ⚠️ **The agent hit an error and stopped.**\n> {str(e)}\n")
         finally:
             q.put(None)
 
@@ -154,7 +155,7 @@ def stream_generator(query: str, deadline: float, user_id, log_id):
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
-                yield "\n\n[TIMEOUT] Request exceeded 5 minute limit. Aborted.\n"
+                yield "\n\n> ⏱️ **Request timed out** after 5 minutes. The agent has been stopped.\n"
                 yielded_chunks.append("[TIMEOUT]")
                 break
             try:
@@ -214,23 +215,11 @@ async def chat_completions(
     # ---- Input size cap ----
     total_chars = sum(len(str(m.get("content", ""))) for m in messages)
     if total_chars > MAX_CONVERSATION_CHARS:
-        return JSONResponse(
-            status_code=413,
-            content={
-                "error": "conversation_too_long",
-                "message": f"Conversation history is too long ({total_chars} > {MAX_CONVERSATION_CHARS} chars).",
-            },
-        )
+        raise errors.conversation_too_long(total_chars, MAX_CONVERSATION_CHARS)
 
     user_msg = extract_user_message(messages)
     if len(user_msg) > MAX_MESSAGE_CHARS:
-        return JSONResponse(
-            status_code=413,
-            content={
-                "error": "message_too_long",
-                "message": f"Message is too long ({len(user_msg)} > {MAX_MESSAGE_CHARS} chars).",
-            },
-        )
+        raise errors.message_too_long(len(user_msg), MAX_MESSAGE_CHARS)
 
     # ---- Credits: pre-charge worst case ----
     full_input_text = "\n".join(str(m.get("content", "")) for m in messages)
@@ -239,32 +228,18 @@ async def chat_completions(
         db, user, input_tokens, MAX_OUTPUT_TOKENS, endpoint="/v1/chat/completions"
     )
     if err:
-        return JSONResponse(
-            status_code=402,
-            content={
-                "error": "insufficient_credits",
-                "message": err,
-                "credits_remaining": user.credits,
-            },
-        )
+        raise errors.insufficient_credits(err["needed"], err["remaining"])
 
     user_id = user.id
     log_id = log.id
 
     # ---- Global concurrency: one agent run at a time ----
     if not agent_lock.acquire(blocking=False):
-        # Refund the pre-charge since we're not running
         try:
             reconcile(db, log_id, user_id, 0)
         except Exception:
             pass
-        return JSONResponse(
-            status_code=429,
-            content={
-                "error": "agent_busy",
-                "message": "Another DFT job is currently running. Please try again in a minute.",
-            },
-        )
+        raise errors.agent_busy()
 
     print(f"\n📩 Incoming query from {user.email} (IP={get_real_ip(request)}):\n{user_msg}\n")
 
