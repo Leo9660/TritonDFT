@@ -11,8 +11,11 @@ def _run_bash_command(
     verbose: bool,
     timeout_seconds: int | None = None,
 ) -> tuple[int, str, str, bool]:
+    # `set -o pipefail` so a pipeline like `mpirun pw.x ... | tee out.log`
+    # returns pw.x's exit code instead of tee's (which is always 0). Without
+    # this, pw.x crashes (e.g. MPI_ABORT) are silently reported as success.
     process = subprocess.Popen(
-        ["bash", "-lc", cmd],
+        ["bash", "-lc", "set -o pipefail; " + cmd],
         cwd=work_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
