@@ -42,8 +42,11 @@ def patch_qe_input_file(
             )
         return pattern.sub(rf"\1'{value}'\3", text)
 
-    # if new_pseudo_dir:
-    #     text = _replace_key(text, "pseudo_dir", new_pseudo_dir)
+    # Always force pseudo_dir to the config-resolved absolute path — the LLM
+    # often writes a relative one like '../PseudoDojo/...' that breaks once
+    # the run's cwd is nested deeper than a single layer.
+    if new_pseudo_dir:
+        text = _replace_key(text, "pseudo_dir", new_pseudo_dir)
     if new_outdir:
         text = _replace_key(text, "outdir", new_outdir)
     # if new_prefix:
