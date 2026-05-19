@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     vim \
+    tini \
     ca-certificates \
     python3.10 \
     python3.10-venv \
@@ -71,4 +72,7 @@ ENV PYTHONUNBUFFERED=1 \
     OMP_NUM_THREADS=1
 EXPOSE 8000
 
+# tini as PID 1 so orphaned mpirun/pw.x children are reaped instead of
+# turning into zombies and eventually exhausting the cgroup PID limit.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

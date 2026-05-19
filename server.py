@@ -183,7 +183,10 @@ def stream_generator(query: str, deadline: float, user_id, log_id):
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
-                yield "\n\n> ⏱️ **Request timed out** after 5 minutes. The agent has been stopped.\n"
+                yield (
+                    f"\n\n> ⏱️ **Request timed out** after {REQUEST_TIMEOUT_S // 60} minutes."
+                    " The agent has been stopped.\n"
+                )
                 yielded_chunks.append("[TIMEOUT]")
                 break
             try:
