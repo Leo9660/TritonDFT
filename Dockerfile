@@ -28,6 +28,18 @@ RUN apt-get update && apt-get install -y \
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python \
  && ln -sf /usr/bin/pip3 /usr/bin/pip
 
+# ---------- OpenMPI tuning for Kubernetes ----------
+# Disable the vader BTL's CMA (Cross-Memory-Attach) single-copy path —
+# K8s default seccomp blocks process_vm_readv() so CMA reads come back
+# with errno=1 (EPERM) and OpenMPI floods stderr with
+#   "Read -1, expected N, errno = 1"
+# even though the job ultimately completes via copy-based fallback.
+# Forcing single_copy_mechanism=none keeps the transport clean.
+ENV OMPI_MCA_btl_vader_single_copy_mechanism=none
+# Run as root in container — silences the routine warning prefix.
+ENV OMPI_ALLOW_RUN_AS_ROOT=1
+ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+
 # ---------- Python venv ----------
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip
