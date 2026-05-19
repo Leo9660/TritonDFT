@@ -227,6 +227,31 @@ def parse_output_template(output_text: str):
     return output_text, {}
 
 
+# Cap how much pw.x output we feed to the LLM result-parser. gpt-4o has a
+# 128K-token context; ~80KB of trimmed pw.x output is well under that even
+# after the prompt's own boilerplate, but big enough to keep the final
+# convergence block + JOB DONE banner that result_parse keys on.
+_OUTPUT_TEXT_MAX_BYTES = 80_000
+_OUTPUT_TEXT_HEAD_BYTES = 20_000  # keep the system-info header
+_OUTPUT_TEXT_TAIL_BYTES = _OUTPUT_TEXT_MAX_BYTES - _OUTPUT_TEXT_HEAD_BYTES
+
+
+def _cap_output_text(text: str) -> tuple[str, bool]:
+    """Truncate huge pw.x outputs to keep the LLM prompt under context limits.
+
+    Returns (capped_text, did_truncate). When truncated, the middle is
+    elided with an explicit marker so the parser can tell the file was
+    long but still has the start (params) and end (JOB DONE + results).
+    """
+    if len(text) <= _OUTPUT_TEXT_MAX_BYTES:
+        return text, False
+    head = text[:_OUTPUT_TEXT_HEAD_BYTES]
+    tail = text[-_OUTPUT_TEXT_TAIL_BYTES:]
+    elided = len(text) - len(head) - len(tail)
+    marker = f"\n\n... [{elided} bytes elided to fit LLM context — middle of output dropped] ...\n\n"
+    return head + marker + tail, True
+
+
 def preprocess_output_list(output_list: List[str], verbose: bool = False) -> List[str]:
     processed = []
     for idx, item in enumerate(output_list, start=1):
@@ -236,8 +261,11 @@ def preprocess_output_list(output_list: List[str], verbose: bool = False) -> Lis
         # vc-relax: keep forces; scf/nscf/bands: forces usually can be dropped
         text, r2 = _strip_scf_iteration_noise(text, keep_forces_block=True)
 
-        if verbose and (r1 + r2) > 0:
-            print(f"[parser] Output {idx}: trimmed {r1} lines (bands) + {r2} lines (scf/iter).")
+        text, capped = _cap_output_text(text)
+
+        if verbose and (r1 + r2 > 0 or capped):
+            extra = " + capped" if capped else ""
+            print(f"[parser] Output {idx}: trimmed {r1} lines (bands) + {r2} lines (scf/iter){extra}.")
         processed.append(text)
     return processed
 
