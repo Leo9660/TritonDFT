@@ -44,7 +44,7 @@ ARG QE_BUILD_JOBS=8
 RUN git clone --depth 1 --branch ${QE_VERSION} https://gitlab.com/QEF/q-e.git /workspace/QuantumE \
  && cd /workspace/QuantumE \
  && ./configure \
- && make -j${QE_BUILD_JOBS} pw pp \
+ && make -j${QE_BUILD_JOBS} pw pp ph \
  && find /workspace/QuantumE -type d \( -name ".git" -o -name "test-suite" -o -name "Doc" \) -prune -exec rm -rf {} + || true
 
 # ---------- Late-added Python deps (avoid invalidating QE build cache) ----------
