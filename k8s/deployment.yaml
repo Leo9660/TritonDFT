@@ -30,7 +30,11 @@ spec:
       - name: tritondft
         image: docker.io/yil384/tritondft:v10
         imagePullPolicy: IfNotPresent
-        command: ["uvicorn"]
+        # Route through tini so orphaned mpirun/pw.x children get reaped
+        # instead of accumulating as zombies. tini is installed in the
+        # image; we set command explicitly here because K8s otherwise
+        # bypasses the Dockerfile ENTRYPOINT when args are overridden.
+        command: ["/usr/bin/tini", "--", "uvicorn"]
         args:
           - "server:app"
           - "--host=0.0.0.0"
