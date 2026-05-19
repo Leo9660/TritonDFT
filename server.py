@@ -205,6 +205,16 @@ def stream_generator(query: str, deadline: float, user_id, log_id):
             yield "\n"
 
     finally:
+        # Wait for the agent thread to actually terminate before restoring
+        # sys.stdout/sys.stderr and releasing the lock. Python can't kill a
+        # thread, but the qe_timeout_seconds cap (~540s) on each pw.x means
+        # the worker drains within ~10 min worst-case. Without this join the
+        # orphaned agent thread keeps print()-ing to sys.stdout, which the
+        # NEXT request will have already redirected to its own StreamCatcher
+        # — cross-polluting that user's response stream.
+        if t.is_alive():
+            t.join(timeout=900)  # 15 min hard cap; pw.x dies well before this
+
         sys.stdout = old_stdout
         sys.stderr = old_stderr
         # Reconcile: refund unused output budget
