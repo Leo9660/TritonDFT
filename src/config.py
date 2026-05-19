@@ -80,13 +80,41 @@ class Config:
         # regardless of how deeply the run's cwd is nested (e.g. when
         # work_dir is /workspace/tmp/<date>/<run>/ — 3 levels deep).
         pseudo = PseudoPaths.from_dict(pseudo_section)
-        pseudo = PseudoPaths(
-            LDA=str((repo_root / pseudo.LDA).resolve()) if not Path(pseudo.LDA).is_absolute() else pseudo.LDA,
-            PBE=str((repo_root / pseudo.PBE).resolve()) if not Path(pseudo.PBE).is_absolute() else pseudo.PBE,
-            PBESOL=str((repo_root / pseudo.PBESOL).resolve()) if not Path(pseudo.PBESOL).is_absolute() else pseudo.PBESOL,
-            PBE_FR=str((repo_root / pseudo.PBE_FR).resolve()) if not Path(pseudo.PBE_FR).is_absolute() else pseudo.PBE_FR,
-            PBESOL_FR=str((repo_root / pseudo.PBESOL_FR).resolve()) if not Path(pseudo.PBESOL_FR).is_absolute() else pseudo.PBESOL_FR,
-        )
+
+        def _resolve(p: str) -> str:
+            return str((repo_root / p).resolve()) if not Path(p).is_absolute() else p
+
+        resolved = {
+            "LDA": _resolve(pseudo.LDA),
+            "PBE": _resolve(pseudo.PBE),
+            "PBESOL": _resolve(pseudo.PBESOL),
+            "PBE_FR": _resolve(pseudo.PBE_FR),
+            "PBESOL_FR": _resolve(pseudo.PBESOL_FR),
+        }
+
+        # Fallback for missing/empty pseudo dirs.  PseudoDojo FR sets ship
+        # separately from SR; if the FR directory doesn't exist (or is
+        # empty) we transparently re-point the FR slot to its non-FR sibling
+        # so a spin-orbit request degrades gracefully to scalar-relativistic
+        # instead of crashing with "file ... not found" inside pw.x.  Same
+        # idea: if any slot is missing, fall back to PBE_standard as a
+        # last-resort.
+        def _has_upfs(d: str) -> bool:
+            p = Path(d)
+            return p.is_dir() and any(p.glob("*.upf")) or any(p.glob("*.UPF"))
+
+        pbe_fallback = resolved["PBE"] if _has_upfs(resolved["PBE"]) else None
+        if pbe_fallback:
+            if not _has_upfs(resolved["PBE_FR"]):
+                resolved["PBE_FR"] = pbe_fallback
+            if not _has_upfs(resolved["PBESOL_FR"]):
+                resolved["PBESOL_FR"] = resolved["PBESOL"] if _has_upfs(resolved["PBESOL"]) else pbe_fallback
+            if not _has_upfs(resolved["LDA"]):
+                resolved["LDA"] = pbe_fallback
+            if not _has_upfs(resolved["PBESOL"]):
+                resolved["PBESOL"] = pbe_fallback
+
+        pseudo = PseudoPaths(**resolved)
 
         final_qe_bin = qe_bin_dir or str((repo_root / DEFAULT_QE_BIN_DIR).resolve())
         return cls(

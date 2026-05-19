@@ -25,9 +25,16 @@ def run_qe_inputs(
     hardware_description: Optional[str] = None,
     auto_confirm: bool = False,
     output_paths: Optional[List[str]] = None,
+    timeout_seconds: int = 600,
 ) -> Tuple[List[int], List[str]]:
     """
     Execute QE inputs sequentially using the selected execution mode.
+
+    timeout_seconds: per-pw.x cap. Each input invocation is killed (along
+    with the whole mpirun process group) if it exceeds this. Defaults to
+    600s (10 min) — long enough for reasonable interactive jobs but short
+    enough that a runaway pw.x can't outlive a disconnected client and
+    pin the agent lock on the pod.
     """
     exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
     if run_mode == "mpirun":
@@ -66,6 +73,7 @@ def run_qe_inputs(
                         parallel_np,
                         command=command,
                         output_paths=[out_path],
+                        timeout_seconds=timeout_seconds,
                     )
                     retcodes.extend(run_codes)
                     resolved_outputs.extend(run_outputs)
@@ -81,6 +89,7 @@ def run_qe_inputs(
             verbose,
             parallel_np,
             output_paths=output_paths,
+            timeout_seconds=timeout_seconds,
         )
     elif run_mode == "local":
         return _run_direct(exec_path, input_paths, work_dir, verbose, output_paths=output_paths)

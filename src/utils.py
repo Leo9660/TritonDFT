@@ -117,6 +117,66 @@ def patch_qe_input_file(
         with open(in_path, "w", encoding="utf-8") as f:
             f.write(new_text)
 
+
+def validate_pseudos_exist(in_path: str) -> Tuple[None, Optional[str]]:
+    """Scan a QE input file's ATOMIC_SPECIES block and check that each
+    referenced .upf exists under the file's pseudo_dir.
+
+    Catches the (otherwise obscure) "rc=132 / mpirun cannot exec" failure
+    when the selected pseudo library doesn't ship the element the LLM
+    asked for (e.g. requesting Eu/Nd against PBE_standard which stops at
+    Lu). Returns (None, "<error message>") on missing files so the agent
+    can retry with different params instead of crashing pw.x.
+    """
+    try:
+        with open(in_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        return None, f"could not read input file: {e}"
+
+    pd_match = re.search(
+        r"^\s*pseudo_dir\s*=\s*['\"]([^'\"]+)['\"]",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if not pd_match:
+        return None, None  # nothing to validate
+    pseudo_dir = pd_match.group(1)
+    if not os.path.isdir(pseudo_dir):
+        return None, f"pseudo_dir does not exist on disk: {pseudo_dir}"
+
+    species_end_keys = re.compile(
+        r"^\s*(ATOMIC_POSITIONS|K_POINTS|CELL_PARAMETERS|ATOMIC_FORCES|OCCUPATIONS|CONSTRAINTS|&\w+)\b",
+        re.IGNORECASE,
+    )
+    in_species = False
+    missing: List[str] = []
+    for raw in text.splitlines():
+        if not in_species:
+            if re.match(r"^\s*ATOMIC_SPECIES\b", raw, re.IGNORECASE):
+                in_species = True
+            continue
+        if not raw.strip() or species_end_keys.match(raw):
+            break
+        body = raw.split("#", 1)[0].strip()
+        tokens = body.split()
+        if len(tokens) < 3:
+            continue
+        ppfile = tokens[2]
+        if not ppfile.lower().endswith(".upf"):
+            continue
+        candidate = ppfile if os.path.isabs(ppfile) else os.path.join(pseudo_dir, ppfile)
+        if not os.path.isfile(candidate):
+            missing.append(ppfile)
+
+    if missing:
+        return None, (
+            f"pseudopotential(s) not found in {pseudo_dir}: {', '.join(missing)}. "
+            f"The selected library does not cover one of the requested elements."
+        )
+    return None, None
+
+
 def parse_scripts_block(generated: str) -> list[str]:
     # parse multiple <script>...</script> directly from the model output
     scripts = re.findall(

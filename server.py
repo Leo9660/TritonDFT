@@ -40,7 +40,7 @@ import errors
 MAX_MESSAGE_CHARS = 8000          # per-message cap (the only one the agent actually sees)
 MAX_CONVERSATION_CHARS = 2_000_000  # raw payload guard only — agent uses just the latest user msg,
                                     # so huge histories from streamed agent logs are harmless
-REQUEST_TIMEOUT_S = 300
+REQUEST_TIMEOUT_S = 1800  # 30 min — matches the upper bound of MAX_LOOPS=3 × per-pw.x cap (600s) + LLM overhead
 MAX_OUTPUT_TOKENS = 4096   # worst-case for pre-charge
 
 PER_IP_RATE = "5/minute;30/day"
@@ -104,6 +104,10 @@ agent = DFTAgent(
     need_query_info=True,
     parallel_exec=True,
     parallel_np=12,
+    # Each pw.x invocation is killed (along with its mpirun process group)
+    # after 540s ≈ 9 min — slightly under REQUEST_TIMEOUT_S / MAX_LOOPS=3 so
+    # we get up to 3 retry attempts inside one 30-min request window.
+    qe_timeout_seconds=540,
 )
 
 print("✅ DFT Agent Loaded")

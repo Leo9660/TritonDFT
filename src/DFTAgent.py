@@ -15,7 +15,8 @@ from generator import UnifiedGenerator
 from execute_code.slurm import SlurmLauncher
 from tool import get_spec, fetch_material_info_from_api_snippet, build_tool_requirements
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
-parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file
+parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file, \
+validate_pseudos_exist
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
 
@@ -54,6 +55,7 @@ class DFTAgent:
         config_name: Optional[str] = None,
         script_only: bool = False,
         mpid_output_file: Optional[str] = None,
+        qe_timeout_seconds: int = 600,
     ):
         self.config_name = config_name or "config.yaml"
         self.config = Config.load(self.config_name)
@@ -80,6 +82,7 @@ class DFTAgent:
             raise ValueError(f"run_mode must be one of {valid_run_modes}.")
         self.run_mode = run_mode
         self.auto_confirm = auto_confirm
+        self.qe_timeout_seconds = qe_timeout_seconds
         self.pseudo_dirs = self.config.pseudo
         self.pseudo_dir = self.config.pseudo.PBE
         self.qe_bin_prefix = self.config.qe_bin_dir
@@ -378,9 +381,26 @@ class DFTAgent:
             input_paths = write_inputs(work_dir, scripts, prefix="input", suffix=".in", subproblem_id=subproblem_id)
             
             # Patch Inputs
+            missing_pseudo_err: Optional[str] = None
             for i, path in enumerate(input_paths):
                 exec_id = f"{problem_id}_{loop_count}_{i}"
                 patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir, new_prefix=f"subproblem_{exec_id}", pp_dir_clean=True)
+                # Fail fast (within the retry loop) if a pseudopotential the
+                # LLM requested is missing — otherwise pw.x crashes with an
+                # obscure mpirun rc=132.
+                _, err = validate_pseudos_exist(path)
+                if err:
+                    missing_pseudo_err = err
+                    if self.verbose:
+                        print(f"[solve_sub_problem][warn] {err}")
+                    break
+
+            if missing_pseudo_err:
+                if loop_count >= MAX_LOOPS:
+                    raise ValueError(f"Could not solve the subproblem! {missing_pseudo_err}")
+                error_code += f"Pseudo missing: {missing_pseudo_err}\n\n"
+                params_json = json.dumps({"hint": missing_pseudo_err})
+                continue
 
             # Input Eval (if enabled)
             if self.evaluation_mode and hasattr(fn_spec, "eval_input") and fn_spec.eval_input:
@@ -427,6 +447,7 @@ class DFTAgent:
                     max_new_tokens=self.max_new_tokens,
                     auto_confirm=self.auto_confirm,
                     output_paths=output_paths,
+                    timeout_seconds=self.qe_timeout_seconds,
                 )
                 # Successful execution block end
                 acc_dft_run_time += (time.perf_counter() - t_dft_start)
