@@ -3,6 +3,7 @@
 Execution happens in a separate worker process (worker.py) — the HTTP request
 lifecycle is fully decoupled from the (possibly 30-minute) agent run.
 """
+import uuid as _uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request
@@ -26,6 +27,16 @@ MAX_OUTPUT_TOKENS = 4096   # worst-case for pre-charge
 
 class CreateJobBody(BaseModel):
     messages: list
+
+
+def _valid_uuid(s: str) -> bool:
+    """Guard before querying — a non-UUID would make Postgres raise on the
+    uuid column comparison (500) instead of a clean 404."""
+    try:
+        _uuid.UUID(str(s))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 def _extract_user_message(messages) -> str:
@@ -97,6 +108,8 @@ async def get_job(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ):
+    if not _valid_uuid(job_id):
+        raise errors.job_not_found()
     job = db.query(Job).filter(Job.id == job_id).first()
     # Treat "not yours" as not-found so job existence isn't leaked.
     if job is None or (job.user_id != user.id and not user.is_admin):
@@ -121,6 +134,8 @@ async def cancel_job(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ):
+    if not _valid_uuid(job_id):
+        raise errors.job_not_found()
     job = db.query(Job).filter(Job.id == job_id).first()
     if job is None or (job.user_id != user.id and not user.is_admin):
         raise errors.job_not_found()
@@ -142,6 +157,8 @@ async def cancel_job(
 # ───── Artifacts ─────
 
 def _owned_job(job_id: str, user: User, db: Session) -> Job:
+    if not _valid_uuid(job_id):
+        raise errors.job_not_found()
     job = db.query(Job).filter(Job.id == job_id).first()
     if job is None or (job.user_id != user.id and not user.is_admin):
         raise errors.job_not_found()
