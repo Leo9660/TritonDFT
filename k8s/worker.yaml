@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tritondft-worker
+  namespace: datahub-llm
+  labels:
+    k8s-app: tritondft-worker
+spec:
+  # Concurrency = replica count. Each worker pod is its own process (own
+  # sys.stdout) and runs exactly one DFT job at a time. Scale this number.
+  replicas: 3
+  selector:
+    matchLabels:
+      k8s-app: tritondft-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        k8s-app: tritondft-worker
+    spec:
+      priorityClassName: opportunistic
+      # Give in-flight jobs a chance to checkpoint output before SIGKILL.
+      terminationGracePeriodSeconds: 60
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: feature.node.kubernetes.io/pci-10de.present
+                operator: NotIn
+                values: ["true"]
+      containers:
+      - name: worker
+        image: docker.io/yil384/tritondft:v14
+        imagePullPolicy: IfNotPresent
+        # tini reaps orphaned mpirun/pw.x children.
+        command: ["/usr/bin/tini", "--", "python", "/workspace/src/worker.py"]
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: OPENAI_API_KEY } }
+        - name: MP_API_KEY
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: MP_API_KEY } }
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: tritondft-secrets, key: DATABASE_URL } }
+        - name: JOB_TIMEOUT_S
+          value: "1800"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: OMP_NUM_THREADS
+          value: "1"
+        resources:
+          requests:
+            cpu: "4"
+            memory: "8Gi"
+          limits:
+            cpu: "16"
+            memory: "32Gi"
+        volumeMounts:
+        - name: workdir
+          mountPath: /workspace/tmp
+        - name: dshm
+          mountPath: /dev/shm
+      volumes:
+      - name: workdir
+        persistentVolumeClaim:
+          claimName: tritondft-workdir
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi
