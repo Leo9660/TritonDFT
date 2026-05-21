@@ -129,7 +129,9 @@ def finalize(job_id, user_id, usage_log_id, status, output, error):
         # Don't overwrite a user-initiated cancellation.
         if job.status != "cancelled":
             job.status = status
-        job.output = output[:OUTPUT_CAP]
+        # Caller already capped to OUTPUT_CAP (+ truncation notice); don't
+        # re-slice here or the notice gets clipped off.
+        job.output = output
         job.error = error
         job.finished_at = datetime.utcnow()
         db.commit()
@@ -189,21 +191,24 @@ def run_job(agent, job_id, user_id, usage_log_id, query):
 
     deadline = time.time() + JOB_TIMEOUT_S
     status = "done"
-    while not done.wait(timeout=FLUSH_INTERVAL_S):
-        if time.time() > deadline:
-            status = "timeout"
+    # try/finally guarantees stdout is restored even if the poll loop raises —
+    # otherwise a hijacked stdout would leak into the next job on this worker.
+    try:
+        while not done.wait(timeout=FLUSH_INTERVAL_S):
+            if time.time() > deadline:
+                status = "timeout"
+                with buf_lock:
+                    buf.append(f"\n\n> ⏱️ Request timed out after {JOB_TIMEOUT_S // 60} minutes.\n")
+                break
             with buf_lock:
-                buf.append(f"\n\n> ⏱️ Request timed out after {JOB_TIMEOUT_S // 60} minutes.\n")
-            break
-        with buf_lock:
-            snapshot = "".join(buf)
-        flush_output(job_id, snapshot)
-        if is_cancelled(job_id):
-            status = "cancelled"
-            break
-
-    sys.stdout = _REAL_STDOUT
-    sys.stderr = _REAL_STDERR
+                snapshot = "".join(buf)
+            flush_output(job_id, snapshot)
+            if is_cancelled(job_id):
+                status = "cancelled"
+                break
+    finally:
+        sys.stdout = _REAL_STDOUT
+        sys.stderr = _REAL_STDERR
 
     if crashed["err"]:
         status = "failed"
