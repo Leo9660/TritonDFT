@@ -33,7 +33,7 @@ spec:
                 values: ["true"]
       containers:
       - name: tritondft
-        image: docker.io/yil384/tritondft:v15
+        image: docker.io/yil384/tritondft:v17
         imagePullPolicy: IfNotPresent
         command: ["/usr/bin/tini", "--", "uvicorn"]
         args:
@@ -77,3 +77,13 @@ spec:
             port: 8000
           initialDelaySeconds: 20
           periodSeconds: 30
+        # Read-only mount of the shared run-output PVC so the API can serve
+        # artifact files/zips that the workers wrote.
+        volumeMounts:
+        - name: workdir
+          mountPath: /workspace/tmp
+          readOnly: true
+      volumes:
+      - name: workdir
+        persistentVolumeClaim:
+          claimName: tritondft-workdir

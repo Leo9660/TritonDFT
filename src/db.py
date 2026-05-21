@@ -2,7 +2,7 @@ import os
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, DateTime, ForeignKey, JSON, Text, Index,
+    create_engine, Column, String, Integer, Boolean, DateTime, ForeignKey, JSON, Text, Index, text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.dialects.postgresql import UUID
@@ -74,6 +74,8 @@ class Job(Base):
     error = Column(Text)
     usage_log_id = Column(UUID(as_uuid=True))   # links to UsageLog for credit reconcile
     worker_id = Column(String)                  # which worker pod claimed it
+    run_dir = Column(Text)                      # absolute path to the agent's run directory (on the PVC)
+    result = Column(JSON)                       # extracted key values (material, energy, band gap, ...)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
@@ -92,10 +94,30 @@ def get_session():
         db.close()
 
 
+def _run_migrations():
+    """Idempotent column additions.
+
+    Base.metadata.create_all() only CREATES missing tables — it never ALTERs an
+    existing one. New columns added to a model after its table already exists
+    must be applied explicitly here.
+    """
+    migrations = [
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_dir TEXT",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS result JSON",
+    ]
+    with engine.begin() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+            except Exception as e:
+                print(f"[migrate] failed: {stmt} -> {e}")
+
+
 def init_db():
-    """Create tables and seed admin users from ADMIN_EMAILS env var."""
+    """Create tables, apply migrations, and seed admin users from ADMIN_EMAILS."""
     try:
         Base.metadata.create_all(engine)
+        _run_migrations()
         admin_emails = [
             e.strip().lower()
             for e in os.environ.get("ADMIN_EMAILS", "").split(",")

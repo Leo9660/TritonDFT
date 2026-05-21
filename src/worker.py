@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from sqlalchemy import text
 from db import SessionLocal, Job, init_db
 from credits import count_tokens, reconcile
+from artifacts import extract_result
 from DFTAgent import DFTAgent
 
 WORKER_ID = os.environ.get("HOSTNAME", socket.gethostname())
@@ -120,7 +121,8 @@ def is_cancelled(job_id) -> bool:
         db.close()
 
 
-def finalize(job_id, user_id, usage_log_id, status, output, error):
+def finalize(job_id, user_id, usage_log_id, status, output, error,
+             run_dir=None, result=None):
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
@@ -133,6 +135,10 @@ def finalize(job_id, user_id, usage_log_id, status, output, error):
         # re-slice here or the notice gets clipped off.
         job.output = output
         job.error = error
+        if run_dir:
+            job.run_dir = run_dir
+        if result:
+            job.result = result
         job.finished_at = datetime.utcnow()
         db.commit()
         actual_tokens, _ = count_tokens(output)
@@ -217,8 +223,20 @@ def run_job(agent, job_id, user_id, usage_log_id, query):
     if len(final_output) > OUTPUT_CAP:
         final_output = final_output[:OUTPUT_CAP] + "\n\n[... output truncated at 80KB ...]"
 
+    # Capture artifacts — agent.work_dir points at this run's directory.
+    run_dir = None
+    result = None
+    try:
+        wd = Path(str(agent.work_dir))
+        if wd != Path(WORK_DIR) and (wd / "run_meta.json").exists():
+            run_dir = str(wd)
+            result = extract_result(wd)
+            log(f"job {job_id} artifacts: run_dir={run_dir} result={result}")
+    except Exception as e:
+        log(f"artifact capture failed for {job_id}: {e}")
+
     finalize(job_id, user_id, usage_log_id, status,
-             final_output, crashed["err"])
+             final_output, crashed["err"], run_dir=run_dir, result=result)
     log(f"job {job_id} finished: status={status}")
 
     # If the agent thread is still alive (timeout/cancel — agent.run() can't be
