@@ -2,7 +2,7 @@ import os
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, DateTime, ForeignKey, JSON,
+    create_engine, Column, String, Integer, Boolean, DateTime, ForeignKey, JSON, Text, Index,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.dialects.postgresql import UUID
@@ -58,6 +58,30 @@ class AuditLog(Base):
     before = Column(JSON)
     after = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Job(Base):
+    """A queued DFT request. Workers claim queued rows, run the agent, and
+    append output. The HTTP request lifecycle is decoupled from execution —
+    the user can close the browser and the job keeps running."""
+    __tablename__ = "jobs"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    # queued | running | done | failed | timeout | cancelled
+    status = Column(String, default="queued", nullable=False)
+    query = Column(Text, nullable=False)
+    output = Column(Text, default="", nullable=False)
+    error = Column(Text)
+    usage_log_id = Column(UUID(as_uuid=True))   # links to UsageLog for credit reconcile
+    worker_id = Column(String)                  # which worker pod claimed it
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+
+
+# Worker claim query filters status='queued' ordered by created_at; this index
+# makes both the claim and the queue-position count fast.
+Index("ix_jobs_status_created", Job.status, Job.created_at)
 
 
 def get_session():

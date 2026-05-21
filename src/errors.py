@@ -101,3 +101,12 @@ def agent_busy():
         429, "agent_busy",
         "Another DFT job is currently running. Please try again in a minute.",
     )
+
+
+# ───── Jobs ─────
+def job_not_found():
+    return APIError(404, "job_not_found", "That job doesn't exist or isn't yours.")
+
+
+def empty_message():
+    return APIError(400, "empty_message", "Your message is empty.")
