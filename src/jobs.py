@@ -6,6 +6,7 @@ lifecycle is fully decoupled from the (possibly 30-minute) agent run.
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,7 @@ from db import get_session, Job, User
 from auth import get_current_user
 from credits import count_tokens, pre_charge, reconcile
 from ratelimit import limiter, PER_IP_RATE
+import artifacts
 import errors
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -108,6 +110,8 @@ async def get_job(
         "queue_position": _queue_position(db, job) if job.status == "queued" else None,
         "credits_remaining": user.credits,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "result": job.result,
+        "has_artifacts": bool(job.run_dir),
     }
 
 
@@ -133,3 +137,79 @@ async def cancel_job(
             print(f"[jobs] cancel reconcile failed for {job_id}: {e}")
 
     return {"ok": True, "status": job.status}
+
+
+# ───── Artifacts ─────
+
+def _owned_job(job_id: str, user: User, db: Session) -> Job:
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if job is None or (job.user_id != user.id and not user.is_admin):
+        raise errors.job_not_found()
+    return job
+
+
+@router.get("/{job_id}/files")
+async def list_job_files(
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    job = _owned_job(job_id, user, db)
+    run_dir = artifacts.safe_run_dir(job.run_dir)
+    if run_dir is None:
+        return {"files": []}
+    return {"files": artifacts.list_files(run_dir)}
+
+
+@router.get("/{job_id}/bands")
+async def get_job_bands(
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    job = _owned_job(job_id, user, db)
+    run_dir = artifacts.safe_run_dir(job.run_dir)
+    if run_dir is None:
+        return {"bands": None}
+    return {"bands": artifacts.parse_bands(run_dir)}
+
+
+@router.get("/{job_id}/download")
+async def download_job_zip(
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    job = _owned_job(job_id, user, db)
+    run_dir = artifacts.safe_run_dir(job.run_dir)
+    if run_dir is None:
+        raise errors.job_not_found()
+    data = artifacts.build_zip(run_dir)
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="tritondft-{job_id}.zip"'},
+    )
+
+
+@router.get("/{job_id}/files/{name}")
+async def get_job_file(
+    job_id: str,
+    name: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    job = _owned_job(job_id, user, db)
+    run_dir = artifacts.safe_run_dir(job.run_dir)
+    if run_dir is None or not artifacts.is_safe_filename(name):
+        raise errors.job_not_found()
+    # Only serve whitelisted files that actually exist in the listing.
+    allowed = {f["name"] for f in artifacts.list_files(run_dir)}
+    if name not in allowed:
+        raise errors.job_not_found()
+    fp = run_dir / name
+    try:
+        data = fp.read_bytes()
+    except OSError:
+        raise errors.job_not_found()
+    return Response(content=data, media_type="text/plain; charset=utf-8")
