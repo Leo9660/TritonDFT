@@ -121,6 +121,41 @@ def extract_result(run_dir: Path) -> dict:
     return result
 
 
+def _extract_fermi(run_dir: Path):
+    """Fermi energy (eV) from QE output — used to zero-reference band plots.
+
+    Metals print 'the Fermi energy is X ev'; insulators with fixed occupations
+    print the highest-occupied level instead (use that as the reference).
+
+    Scans all output_*.out steps and keeps the LAST value: vc-relax changes the
+    cell so its early-step energies use a different reference than the final
+    scf/nscf — and bands.x runs on that final structure. The last step's value
+    is the one consistent with the band data.
+    """
+    fermi = None
+    try:
+        for f in sorted(run_dir.glob("output_*.out")):
+            text = f.read_text(errors="ignore")
+            m = re.findall(r"the Fermi energy is\s+(-?\d+\.\d+)\s*ev", text)
+            if m:
+                fermi = float(m[-1])
+                continue
+            m = re.findall(
+                r"highest occupied, lowest unoccupied level \(ev\):\s*"
+                r"(-?\d+\.\d+)\s+(-?\d+\.\d+)",
+                text,
+            )
+            if m:
+                fermi = float(m[-1][0])   # highest occupied = valence band max
+                continue
+            m = re.findall(r"highest occupied level \(ev\):\s*(-?\d+\.\d+)", text)
+            if m:
+                fermi = float(m[-1])
+    except Exception:
+        pass
+    return fermi
+
+
 def parse_bands(run_dir: Path):
     """Parse a QE bands.x *.band.gnu file into polylines.
 
@@ -163,6 +198,7 @@ def parse_bands(run_dir: Path):
         "e_max": max(all_e),
         "k_min": min(all_k),
         "k_max": max(all_k),
+        "e_fermi": _extract_fermi(run_dir),
     }
 
 
