@@ -157,13 +157,13 @@ def enforce_qe_parameters_from_guess(
         return text[:match.start()] + header + insertion + footer + text[match.end():]
 
     def _replace_k_points_automatic(text: str, mesh: str) -> str:
-        mesh = mesh.lower().replace("×", "x")
-        parts = [p.strip() for p in mesh.split("x") if p.strip()]
+        mesh = mesh.lower().replace("×", "x").replace(",", " ")
+        parts = [p.strip() for p in re.split(r"[x\s]+", mesh) if p.strip()]
         if len(parts) != 3 or not all(p.isdigit() for p in parts):
             return text
         replacement = f"K_POINTS automatic\n{parts[0]} {parts[1]} {parts[2]} 1 1 1"
         pattern = re.compile(
-            r"^\s*K_POINTS\s+automatic\s*$\n^\s*.*?$",
+            r"^\s*K_POINTS\s+automatic\s*\n\s*.*(?:\n|$)",
             re.IGNORECASE | re.MULTILINE,
         )
         if pattern.search(text):
