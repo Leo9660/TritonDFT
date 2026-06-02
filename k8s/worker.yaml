@@ -35,7 +35,7 @@ spec:
                 values: ["true"]
       containers:
       - name: worker
-        image: docker.io/yil384/tritondft:v24
+        image: docker.io/yil384/tritondft:v25
         imagePullPolicy: IfNotPresent
         # tini reaps orphaned mpirun/pw.x children.
         command: ["/usr/bin/tini", "--", "python", "/workspace/src/worker.py"]
