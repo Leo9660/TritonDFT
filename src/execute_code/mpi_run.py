@@ -33,7 +33,12 @@ def run_with_mpirun(
         work_dir,
         verbose,
         lambda e, inp, out: (
-            f"mpirun --allow-run-as-root -np {parallel_np} "
+            # --bind-to none + --oversubscribe: K8s CPU cgroups rarely expose a
+            # clean set of bindable cores, so Open MPI's default core binding
+            # aborts with "no available cpus" on busy/opportunistic nodes. Don't
+            # bind to cores and allow oversubscription so the run launches (and
+            # time-shares) instead of failing.
+            f"mpirun --allow-run-as-root --bind-to none --oversubscribe -np {parallel_np} "
             f"{shlex.quote(e)} -in {shlex.quote(inp)} | tee {shlex.quote(out)}"
         ),
         output_paths=output_paths,
