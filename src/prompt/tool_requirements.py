@@ -108,6 +108,24 @@ pw_requirement_template = """
     - Based on the material properties, choose whether to use magnetic moments, spin polarization, spin-orbit coupling.
     - Remember that we need to use fully relativistic pseudopotentials when including spin-orbit coupling.
 
+    [DFT+U / Hubbard corrections — Quantum ESPRESSO v7.3 syntax (CRITICAL)]
+    - This is QE v7.3.1. The pre-v7.1 DFT+U keywords are OBSOLETE and cause a FATAL
+      error ("DFT+Hubbard input syntax has changed since v7.1"). Therefore:
+        * Do NOT put lda_plus_u, lda_plus_u_kind, Hubbard_U(i), Hubbard_J(i),
+          U_projection_type, or Hubbard_alpha(i) in &SYSTEM. NEVER use them.
+    - Instead, specify Hubbard U with a HUBBARD card placed AFTER the namelists
+      (alongside ATOMIC_SPECIES / ATOMIC_POSITIONS / K_POINTS), format:
+        HUBBARD (ortho-atomic)
+        U <species>-<manifold> <value_in_eV>
+      Example for Fe 3d with U = 4.5 eV:
+        HUBBARD (ortho-atomic)
+        U Fe-3d 4.5
+    - The projector in parentheses is the Hubbard projector type; prefer
+      'ortho-atomic' (use 'atomic' only if orthogonalization is problematic).
+    - The manifold is element-symbol + orbital (e.g. Fe-3d, Mn-3d, Ni-3d, Ce-4f, V-3d).
+    - starting_magnetization, nspin, occupations etc. stay in &SYSTEM as usual —
+      only the +U keywords moved to the HUBBARD card.
+
     [Header formatting & discipline]
     - Section headers must be single-line with qualifiers (e.g., "ATOMIC_POSITIONS (crystal)", "CELL_PARAMETERS (alat)", "K_POINTS automatic").
     - ecutwfc/ecutrho/occupations MUST be inside &system.
