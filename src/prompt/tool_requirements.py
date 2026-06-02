@@ -126,6 +126,18 @@ pw_requirement_template = """
     - starting_magnetization, nspin, occupations etc. stay in &SYSTEM as usual —
       only the +U keywords moved to the HUBBARD card.
 
+    [Numeric values — literals only (CRITICAL)]
+    - NEVER write an arithmetic expression as an input value. Fortran namelist
+      parsing treats '/' as the namelist TERMINATOR, so e.g.
+      celldm(1)=2.87/0.529177 silently ENDS the &system namelist early and
+      corrupts the entire input (later keywords and cards get ignored).
+    - Every numeric value MUST be a single pre-computed literal — no '/', '*',
+      '+', '-' operators, and no inline unit conversions.
+    - Lattice parameter: either give celldm(1) in BOHR as a plain number
+      (compute the Angstrom→Bohr conversion yourself: 1 Angstrom = 1.8897259886 Bohr),
+      OR specify the cell in ANGSTROM using A=<value> (and B=, C=, cosAB=, ... as
+      needed) in &system. Do NOT divide an Angstrom value by 0.529 inline.
+
     [Header formatting & discipline]
     - Section headers must be single-line with qualifiers (e.g., "ATOMIC_POSITIONS (crystal)", "CELL_PARAMETERS (alat)", "K_POINTS automatic").
     - ecutwfc/ecutrho/occupations MUST be inside &system.
