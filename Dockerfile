@@ -40,6 +40,12 @@ ENV OMPI_MCA_btl_vader_single_copy_mechanism=none
 # Run as root in container — silences the routine warning prefix.
 ENV OMPI_ALLOW_RUN_AS_ROOT=1
 ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+# K8s CPU cgroups don't expose a clean bindable core set, so on busy
+# (opportunistic, shared) nodes Open MPI's default binding aborts with
+# "no available cpus on the node". Don't bind ranks to cores and allow
+# oversubscription so jobs launch and time-share instead of failing.
+ENV OMPI_MCA_hwloc_base_binding_policy=none
+ENV OMPI_MCA_rmaps_base_oversubscribe=1
 
 # ---------- Python venv ----------
 RUN python -m venv /opt/venv \
