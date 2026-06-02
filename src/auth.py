@@ -108,7 +108,7 @@ async def request_link(body: RequestLinkBody, db: Session = Depends(get_session)
         is_admin = email in admin_emails
         user = User(
             email=email,
-            credits=1000,
+            credits=100,
             is_admin=is_admin,
             is_unlimited=is_admin,
         )

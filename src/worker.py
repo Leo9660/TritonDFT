@@ -55,7 +55,8 @@ def log(msg: str):
 # ───── DB helpers (each opens a short-lived session) ─────
 
 def claim_job():
-    """Atomically claim one queued job. Returns (id, user_id, usage_log_id, query) or None."""
+    """Atomically claim one queued job.
+    Returns (id, user_id, usage_log_id, query, model, script_only) or None."""
     db = SessionLocal()
     try:
         row = db.execute(text("""
@@ -72,7 +73,8 @@ def claim_job():
         if row is None:
             return None
         job = db.query(Job).filter(Job.id == row[0]).first()
-        return (job.id, job.user_id, job.usage_log_id, job.query)
+        return (job.id, job.user_id, job.usage_log_id, job.query,
+                job.model, bool(job.script_only))
     finally:
         db.close()
 
@@ -88,7 +90,8 @@ def reap_stale():
             job.error = "Worker did not finish in time (it likely crashed)."
             job.finished_at = datetime.utcnow()
             try:
-                reconcile(db, job.usage_log_id, job.user_id, count_tokens(job.output or "")[0])
+                reconcile(db, job.usage_log_id, job.user_id, job.model,
+                          None, count_tokens(job.output or "")[0])
             except Exception:
                 pass
         if stale:
@@ -122,7 +125,8 @@ def is_cancelled(job_id) -> bool:
 
 
 def finalize(job_id, user_id, usage_log_id, status, output, error,
-             run_dir=None, result=None):
+             run_dir=None, result=None, model=None,
+             prompt_tokens=None, output_tokens=None, cost_usd=None):
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
@@ -141,8 +145,13 @@ def finalize(job_id, user_id, usage_log_id, status, output, error,
             job.result = result
         job.finished_at = datetime.utcnow()
         db.commit()
-        actual_tokens, _ = count_tokens(output)
-        reconcile(db, usage_log_id, user_id, actual_tokens)
+        # Bill the REAL OpenAI usage the generator tallied for this job. Fall
+        # back to a stdout-length estimate if the generator counts are missing
+        # (e.g. the agent crashed before any LLM call).
+        if output_tokens is None:
+            output_tokens, _ = count_tokens(output)
+        reconcile(db, usage_log_id, user_id, model or job.model,
+                  prompt_tokens, output_tokens, cost_usd=cost_usd)
     except Exception as e:
         db.rollback()
         log(f"finalize error for {job_id}: {e}")
@@ -152,7 +161,22 @@ def finalize(job_id, user_id, usage_log_id, status, output, error,
 
 # ───── Job execution ─────
 
-def run_job(agent, job_id, user_id, usage_log_id, query):
+def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only=False):
+    # Reconfigure the (reused) agent for THIS job: model, script-only mode, and
+    # a fresh token tally so billing reflects only this job's usage.
+    if model:
+        agent.model = model
+        try:
+            agent.generator.model = model
+        except Exception:
+            pass
+    agent.script_only = bool(script_only)
+    try:
+        agent.generator.reset_token_counters()
+    except Exception:
+        pass
+    log(f"job {job_id}: model={agent.model} script_only={agent.script_only}")
+
     buf = []
     buf_lock = threading.Lock()
 
@@ -235,9 +259,17 @@ def run_job(agent, job_id, user_id, usage_log_id, query):
     except Exception as e:
         log(f"artifact capture failed for {job_id}: {e}")
 
+    # Real token usage the generator tallied across all LLM calls in this job.
+    prompt_tokens = getattr(agent.generator, "total_prompt_tokens", None)
+    output_tokens = getattr(agent.generator, "total_output_tokens", None)
+    # Claude Code CLI reports exact USD cost; 0 for the OpenAI (token-billed) path.
+    cost_usd = getattr(agent.generator, "total_cost_usd", 0.0) or None
+
     finalize(job_id, user_id, usage_log_id, status,
-             final_output, crashed["err"], run_dir=run_dir, result=result)
-    log(f"job {job_id} finished: status={status}")
+             final_output, crashed["err"], run_dir=run_dir, result=result,
+             model=agent.model, prompt_tokens=prompt_tokens, output_tokens=output_tokens,
+             cost_usd=cost_usd)
+    log(f"job {job_id} finished: status={status} tokens(in/out)={prompt_tokens}/{output_tokens} cost_usd={cost_usd}")
 
     # If the agent thread is still alive (timeout/cancel — agent.run() can't be
     # killed), exit the process so k8s restarts a clean pod. Otherwise the
@@ -254,7 +286,7 @@ def main():
     init_db()  # idempotent — ensures tables exist even if worker starts first
 
     agent = DFTAgent(
-        model="gpt-4o",
+        model=os.environ.get("DEFAULT_MODEL", "gpt-4o"),
         dft_tool="quantum espresso",
         verbose=True,
         backend="openai",
@@ -264,7 +296,9 @@ def main():
         top_p=0.9,
         need_query_info=True,
         parallel_exec=True,
-        parallel_np=12,
+        # MPI ranks per QE run — keep ≤ the container CPU limit (8) so we don't
+        # oversubscribe cores.
+        parallel_np=int(os.environ.get("JOB_NP", "8")),
         qe_timeout_seconds=540,
     )
     log("agent loaded, polling for jobs")
@@ -281,10 +315,10 @@ def main():
             time.sleep(POLL_INTERVAL_S)
             continue
 
-        job_id, user_id, usage_log_id, query = claimed
+        job_id, user_id, usage_log_id, query, model, script_only = claimed
         log(f"claimed job {job_id}")
         try:
-            run_job(agent, job_id, user_id, usage_log_id, query)
+            run_job(agent, job_id, user_id, usage_log_id, query, model, script_only)
         except Exception as e:
             log(f"run_job crashed for {job_id}: {e}")
             try:

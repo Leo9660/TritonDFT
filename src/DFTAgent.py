@@ -553,6 +553,19 @@ class DFTAgent:
 
         return result
 
+    def _write_analysis(self, analysis: str, query: str = "") -> None:
+        """Persist the run's natural-language conclusion to ``analysis.json`` in
+        the run directory so the API can surface it as the answer to the user's
+        question (separate from the raw streamed log)."""
+        try:
+            payload = {"query": query, "analysis": (analysis or "").strip()}
+            (self.work_dir / "analysis.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            if self.verbose:
+                print(f"[analysis] write failed: {e}")
+
     def run(
         self,
         query: str,
@@ -640,7 +653,8 @@ class DFTAgent:
         total_dft_time = 0.0
         
         last_sub_problem_res = None
-        
+        conclusions = []   # per-subproblem natural-language judgments → analysis.json
+
         for i, step in enumerate(subproblems):
             if self.verbose:
                 print(f"[run] Executing step {i+1}/{len(subproblems)}: {step['problem']}")
@@ -661,9 +675,15 @@ class DFTAgent:
             subproblem_output_tokens.append(getattr(self.generator, "total_output_tokens", 0) - ot_before_sub)
 
             if sub_problem_res and sub_problem_res.get("status") == "timeout":
+                self._write_analysis(
+                    "\n\n".join(conclusions) or "The run timed out before completing.", query)
                 return sub_problem_res
-            
+
             last_sub_problem_res = sub_problem_res
+            judge = sub_problem_res.get("result_judge", "") if isinstance(sub_problem_res, dict) else ""
+            if judge and judge not in ("script_only", "timeout"):
+                label = f"Step {i+1}: " if len(subproblems) > 1 else ""
+                conclusions.append(f"{label}{judge}".strip())
             
             # Extract Timing
             timing = sub_problem_res.get("timing", {})
@@ -682,7 +702,11 @@ class DFTAgent:
             total_dft_time += t_dft
 
             if self.script_only:
-                # Stop here if script only
+                # Stop here if script only — no DFT executed.
+                self._write_analysis(
+                    "Script-only run: generated the Quantum ESPRESSO input file(s) "
+                    "for this query without executing them on CPU. Download the inputs "
+                    "below; an admin can run them to produce results.", query)
                 return sub_problem_res
 
             # Update Memory
@@ -741,4 +765,5 @@ class DFTAgent:
                     f"{max_rel_error},{all_exact_match}\n"
                 )
 
+        self._write_analysis("\n\n".join(conclusions), query)
         return last_sub_problem_res

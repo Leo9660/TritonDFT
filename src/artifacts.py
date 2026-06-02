@@ -17,6 +17,9 @@ USEFUL_EXTS = {
     ".in", ".out", ".xml", ".json", ".band", ".gnu",
     ".dat", ".txt", ".log", ".cif", ".csv",
 }
+# Internal bookkeeping files surfaced elsewhere (result cards / Analysis section)
+# — hide them from the user-facing file list and zip.
+HIDDEN_FILES = {"analysis.json", "run_meta.json"}
 # Everything we whitelist is plain text → safe to preview inline.
 TEXT_EXTS = USEFUL_EXTS
 
@@ -61,6 +64,8 @@ def list_files(run_dir: Path):
         for f in sorted(run_dir.iterdir()):
             if not f.is_file():
                 continue
+            if f.name in HIDDEN_FILES:
+                continue
             if f.suffix.lower() not in USEFUL_EXTS:
                 continue
             try:
@@ -90,6 +95,18 @@ def extract_result(run_dir: Path) -> dict:
                 result["material"] = meta["material_name"]
             if meta.get("task_type"):
                 result["task_type"] = meta["task_type"]
+    except Exception:
+        pass
+
+    # Natural-language conclusion the agent wrote — the answer to the user's
+    # question (distinct from the raw streamed log).
+    try:
+        analysis_path = run_dir / "analysis.json"
+        if analysis_path.exists():
+            adata = json.loads(analysis_path.read_text(errors="ignore"))
+            atext = (adata.get("analysis") or "").strip()
+            if atext:
+                result["analysis"] = atext
     except Exception:
         pass
 

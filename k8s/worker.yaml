@@ -8,7 +8,7 @@ metadata:
 spec:
   # Concurrency = replica count. Each worker pod is its own process (own
   # sys.stdout) and runs exactly one DFT job at a time. Scale this number.
-  replicas: 3
+  replicas: 8
   selector:
     matchLabels:
       k8s-app: tritondft-worker
@@ -35,7 +35,7 @@ spec:
                 values: ["true"]
       containers:
       - name: worker
-        image: docker.io/yil384/tritondft:v20
+        image: docker.io/yil384/tritondft:v23
         imagePullPolicy: IfNotPresent
         # tini reaps orphaned mpirun/pw.x children.
         command: ["/usr/bin/tini", "--", "python", "/workspace/src/worker.py"]
@@ -46,19 +46,30 @@ spec:
           valueFrom: { secretKeyRef: { name: tritondft-secrets, key: MP_API_KEY } }
         - name: DATABASE_URL
           valueFrom: { secretKeyRef: { name: tritondft-secrets, key: DATABASE_URL } }
+        # Auth for the Claude Code CLI generator (claude-* models). Optional —
+        # OpenAI models work without it.
+        - name: CLAUDE_CODE_OAUTH_TOKEN
+          valueFrom:
+            secretKeyRef: { name: tritondft-secrets, key: CLAUDE_CODE_OAUTH_TOKEN, optional: true }
+        - name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+          value: "1"
         - name: JOB_TIMEOUT_S
           value: "1800"
+        # MPI ranks per QE run — must stay ≤ the CPU limit below so we don't
+        # oversubscribe cores when many pods land on one node.
+        - name: JOB_NP
+          value: "8"
         - name: PYTHONUNBUFFERED
           value: "1"
         - name: OMP_NUM_THREADS
           value: "1"
         resources:
           requests:
-            cpu: "4"
-            memory: "8Gi"
+            cpu: "2"
+            memory: "6Gi"
           limits:
-            cpu: "16"
-            memory: "32Gi"
+            cpu: "8"
+            memory: "24Gi"
         volumeMounts:
         - name: workdir
           mountPath: /workspace/tmp

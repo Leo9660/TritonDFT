@@ -11,9 +11,11 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from typing import Optional
+
 from db import get_session, Job, User
 from auth import get_current_user
-from credits import count_tokens, pre_charge, reconcile
+from credits import count_tokens, pre_charge, reconcile, resolve_model
 from ratelimit import limiter, PER_IP_RATE
 import artifacts
 import errors
@@ -27,6 +29,8 @@ MAX_OUTPUT_TOKENS = 4096   # worst-case for pre-charge
 
 class CreateJobBody(BaseModel):
     messages: list
+    model: Optional[str] = None
+    script_only: Optional[bool] = None
 
 
 def _valid_uuid(s: str) -> bool:
@@ -76,10 +80,22 @@ async def create_job(
     if len(user_msg) > MAX_MESSAGE_CHARS:
         raise errors.message_too_long(len(user_msg), MAX_MESSAGE_CHARS)
 
-    # Pre-charge worst-case credits up front; refunded by the worker on finish.
+    model = resolve_model(body.model)
+
+    # CPU policy: only admins and unlimited accounts may run real DFT (CPU).
+    # Everyone else is forced to script-only (generate inputs, no execution),
+    # regardless of what the client requested.
+    privileged = user.is_admin or user.is_unlimited
+    if privileged:
+        # Default for privileged users is CPU on (script_only=False).
+        script_only = bool(body.script_only) if body.script_only is not None else False
+    else:
+        script_only = True
+
+    # Pre-charge worst-case credits up front; reconciled to real usage on finish.
     full_input = "\n".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))
     input_tokens, _ = count_tokens(full_input)
-    log, err = pre_charge(db, user, input_tokens, MAX_OUTPUT_TOKENS, endpoint="/jobs")
+    log, err = pre_charge(db, user, model, input_tokens, MAX_OUTPUT_TOKENS, endpoint="/jobs")
     if err:
         raise errors.insufficient_credits(err["needed"], err["remaining"])
 
@@ -89,6 +105,8 @@ async def create_job(
         query=user_msg,
         output="",
         usage_log_id=log.id,
+        model=model,
+        script_only=script_only,
     )
     db.add(job)
     db.commit()
@@ -99,6 +117,8 @@ async def create_job(
         "status": job.status,
         "queue_position": _queue_position(db, job),
         "credits_remaining": user.credits,
+        "model": model,
+        "script_only": script_only,
     }
 
 
@@ -125,6 +145,8 @@ async def get_job(
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "result": job.result,
         "has_artifacts": bool(job.run_dir),
+        "model": job.model,
+        "script_only": bool(job.script_only),
     }
 
 
@@ -147,7 +169,8 @@ async def cancel_job(
         # Refund the pre-charge. If a worker is mid-run it will also reconcile
         # on finish — reconcile is idempotent so no double refund.
         try:
-            reconcile(db, job.usage_log_id, job.user_id, count_tokens(job.output or "")[0])
+            reconcile(db, job.usage_log_id, job.user_id, job.model,
+                      None, count_tokens(job.output or "")[0])
         except Exception as e:
             print(f"[jobs] cancel reconcile failed for {job_id}: {e}")
 

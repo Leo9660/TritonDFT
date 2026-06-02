@@ -21,7 +21,7 @@ class User(Base):
     __tablename__ = "users"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String, unique=True, nullable=False, index=True)
-    credits = Column(Integer, default=1000, nullable=False)
+    credits = Column(Integer, default=100, nullable=False)
     is_admin = Column(Boolean, default=False, nullable=False)
     is_banned = Column(Boolean, default=False, nullable=False)
     is_unlimited = Column(Boolean, default=False, nullable=False)
@@ -43,6 +43,7 @@ class UsageLog(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     endpoint = Column(String, nullable=False)
+    model = Column(String)                      # which model this usage was billed at
     input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)
     credits_deducted = Column(Integer, default=0)
@@ -74,6 +75,8 @@ class Job(Base):
     error = Column(Text)
     usage_log_id = Column(UUID(as_uuid=True))   # links to UsageLog for credit reconcile
     worker_id = Column(String)                  # which worker pod claimed it
+    model = Column(String)                      # OpenAI model to run this job with
+    script_only = Column(Boolean, default=False, nullable=False)  # generate inputs, skip CPU execution
     run_dir = Column(Text)                      # absolute path to the agent's run directory (on the PVC)
     result = Column(JSON)                       # extracted key values (material, energy, band gap, ...)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -104,6 +107,9 @@ def _run_migrations():
     migrations = [
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_dir TEXT",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS result JSON",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS model TEXT",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script_only BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS model TEXT",
     ]
     with engine.begin() as conn:
         for stmt in migrations:

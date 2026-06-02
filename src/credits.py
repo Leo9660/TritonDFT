@@ -1,16 +1,59 @@
+"""Per-model credit accounting.
+
+A credit is a unit of prepaid usage. 1 credit ≈ ``USD_PER_CREDIT`` of real
+OpenAI spend, so the cost of a job scales with BOTH the model's price and the
+number of tokens it actually consumed:
+
+    credits = ceil( (in_tok·price_in + out_tok·price_out) / 1e6 / USD_PER_CREDIT )
+
+Prices below are USD per 1,000,000 tokens (OpenAI list prices). Update them
+from https://openai.com/api/pricing/ when they change — they're the single
+source of truth for billing.
+"""
+import math
 import tiktoken
 from sqlalchemy.orm import Session
 
 from db import User, UsageLog
 
-# 1 credit = 1K input tokens, 1 credit = 0.33K output tokens (output is 3x input cost)
-CREDITS_PER_1K_INPUT = 1
-CREDITS_PER_1K_OUTPUT = 3
+# USD of model spend that one credit buys. 100 starting credits ≈ $3.
+USD_PER_CREDIT = 0.03
+
+# model id -> (input_usd_per_1M, output_usd_per_1M)
+# Claude models run through the Claude Code CLI, which reports exact USD cost per
+# call — for those, billing uses that real cost (see reconcile). The prices here
+# are only a pre-charge reservation estimate.
+MODEL_PRICES = {
+    "gpt-5.2":      (1.25, 10.00),
+    "gpt-5.1":      (1.25, 10.00),
+    "gpt-5":        (1.25, 10.00),
+    "gpt-5-mini":   (0.25, 2.00),
+    "gpt-5-nano":   (0.05, 0.40),
+    "gpt-4o":       (2.50, 10.00),
+    "gpt-4o-mini":  (0.15, 0.60),
+    "claude-opus-4-8":   (15.00, 75.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5":  (1.00, 5.00),
+}
+
+# What the frontend dropdown may request. Anything else falls back to DEFAULT.
+ALLOWED_MODELS = list(MODEL_PRICES.keys())
+DEFAULT_MODEL = "gpt-4o"
+# Unknown models are priced conservatively (the most expensive flagship input
+# + output) so we never undercharge for something we don't recognize.
+_FALLBACK_PRICE = (2.50, 10.00)
 
 try:
     _ENC = tiktoken.encoding_for_model("gpt-4o")
 except Exception:
     _ENC = tiktoken.get_encoding("cl100k_base")
+
+
+def resolve_model(model):
+    """Return a validated model id (falls back to DEFAULT_MODEL)."""
+    if model and isinstance(model, str) and model in MODEL_PRICES:
+        return model
+    return DEFAULT_MODEL
 
 
 def count_tokens(text: str):
@@ -22,19 +65,30 @@ def count_tokens(text: str):
         return max(1, len(text) // 4), str(e)
 
 
-def estimate_cost(input_tokens: int, output_tokens: int):
-    in_credits = (input_tokens * CREDITS_PER_1K_INPUT + 999) // 1000
-    out_credits = (output_tokens * CREDITS_PER_1K_OUTPUT + 999) // 1000
-    return max(1, in_credits + out_credits), None
+def _price_for(model: str):
+    return MODEL_PRICES.get(model, _FALLBACK_PRICE)
 
 
-def pre_charge(db: Session, user: User, input_tokens: int, max_output_tokens: int, endpoint: str):
-    """Pre-deduct worst-case credits.
+def estimate_cost(model: str, input_tokens: int, output_tokens: int):
+    """Credits for a given model + token counts. Always at least 1."""
+    p_in, p_out = _price_for(model)
+    usd = (input_tokens * p_in + output_tokens * p_out) / 1_000_000.0
+    return credits_from_usd(usd), None
+
+
+def credits_from_usd(usd: float) -> int:
+    """Convert real USD spend to credits (always at least 1)."""
+    return max(1, math.ceil((usd or 0.0) / USD_PER_CREDIT))
+
+
+def pre_charge(db: Session, user: User, model: str, input_tokens: int,
+               max_output_tokens: int, endpoint: str):
+    """Reserve worst-case credits up front; reconcile() settles to actual usage.
 
     Returns (UsageLog, None) on success, or (None, {"needed": int, "remaining": int})
     when the user lacks credits — caller maps this to errors.insufficient_credits.
     """
-    cost, _ = estimate_cost(input_tokens, max_output_tokens)
+    cost, _ = estimate_cost(model, input_tokens, max_output_tokens)
     if not user.is_unlimited and user.credits < cost:
         return None, {"needed": cost, "remaining": user.credits}
     if not user.is_unlimited:
@@ -42,6 +96,7 @@ def pre_charge(db: Session, user: User, input_tokens: int, max_output_tokens: in
     log = UsageLog(
         user_id=user.id,
         endpoint=endpoint,
+        model=model,
         input_tokens=input_tokens,
         output_tokens=max_output_tokens,
         credits_deducted=0 if user.is_unlimited else cost,
@@ -52,22 +107,50 @@ def pre_charge(db: Session, user: User, input_tokens: int, max_output_tokens: in
     return log, None
 
 
-def reconcile(db: Session, log_id, user_id, actual_output_tokens: int):
-    """Refund unused budget after streaming completes. Uses fresh session-safe ids."""
+def reconcile(db: Session, log_id, user_id, model: str,
+              actual_input_tokens=None, actual_output_tokens: int = 0,
+              cost_usd=None):
+    """Settle the pre-charge to the REAL usage.
+
+    If ``cost_usd`` is given (Claude Code CLI reports exact cost), bill on that;
+    otherwise bill on model price × tokens.
+
+    Unlike a refund-only model, this charges the difference if the job used more
+    than the reservation (clamped so a balance never goes negative) and refunds
+    if it used less. Idempotent: re-running with the same actuals is a no-op
+    because credits_deducted is rewritten to the settled cost each time.
+    """
     try:
         log = db.query(UsageLog).filter(UsageLog.id == log_id).first()
         user = db.query(User).filter(User.id == user_id).first()
         if log is None or user is None:
             return 0, "log_or_user_not_found"
+
+        in_tok = actual_input_tokens if actual_input_tokens is not None else (log.input_tokens or 0)
+        model = model or log.model or DEFAULT_MODEL
+
         if user.is_unlimited:
+            log.model = model
+            log.input_tokens = in_tok
             log.output_tokens = actual_output_tokens
             db.commit()
             return 0, None
-        actual_cost, _ = estimate_cost(log.input_tokens, actual_output_tokens)
-        refund = max(0, log.credits_deducted - actual_cost)
-        if refund > 0:
+
+        if cost_usd is not None and cost_usd > 0:
+            actual_cost = credits_from_usd(cost_usd)
+        else:
+            actual_cost, _ = estimate_cost(model, in_tok, actual_output_tokens)
+        delta = actual_cost - (log.credits_deducted or 0)
+        refund = 0
+        if delta > 0:
+            # Charge the overrun, but never push the balance below zero.
+            user.credits -= min(delta, user.credits)
+        elif delta < 0:
+            refund = -delta
             user.credits += refund
-            log.credits_deducted = actual_cost
+        log.credits_deducted = actual_cost
+        log.model = model
+        log.input_tokens = in_tok
         log.output_tokens = actual_output_tokens
         db.commit()
         return refund, None
