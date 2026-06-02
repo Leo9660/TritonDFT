@@ -553,6 +553,31 @@ class DFTAgent:
 
         return result
 
+    @staticmethod
+    def _judge_prose(judge) -> str:
+        """The agent's result_judge is often a JSON blob like
+        {"status":"done","desc":"..."} — extract the human-readable sentence so
+        the Analysis section reads as prose, not raw JSON."""
+        if not judge or not isinstance(judge, str):
+            return ""
+        s = judge.strip()
+        if s.startswith("```"):
+            s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
+            s = re.sub(r"\n?```$", "", s).strip()
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                for k in ("desc", "description", "conclusion", "summary", "answer", "result"):
+                    v = obj.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+                parts = [v.strip() for v in obj.values() if isinstance(v, str) and v.strip()]
+                if parts:
+                    return " ".join(parts)
+        except Exception:
+            pass
+        return s
+
     def _write_analysis(self, analysis: str, query: str = "") -> None:
         """Persist the run's natural-language conclusion to ``analysis.json`` in
         the run directory so the API can surface it as the answer to the user's
@@ -681,9 +706,10 @@ class DFTAgent:
 
             last_sub_problem_res = sub_problem_res
             judge = sub_problem_res.get("result_judge", "") if isinstance(sub_problem_res, dict) else ""
-            if judge and judge not in ("script_only", "timeout"):
+            prose = self._judge_prose(judge)
+            if prose and prose not in ("script_only", "timeout"):
                 label = f"Step {i+1}: " if len(subproblems) > 1 else ""
-                conclusions.append(f"{label}{judge}".strip())
+                conclusions.append(f"{label}{prose}".strip())
             
             # Extract Timing
             timing = sub_problem_res.get("timing", {})
