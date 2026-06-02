@@ -87,11 +87,18 @@ def pre_charge(db: Session, user: User, model: str, input_tokens: int,
 
     Returns (UsageLog, None) on success, or (None, {"needed": int, "remaining": int})
     when the user lacks credits — caller maps this to errors.insufficient_credits.
+
+    The deduction is only FLUSHED (not committed) so the caller can commit it in
+    the SAME transaction as the Job it creates — if job creation fails, the
+    charge rolls back (no orphan deduction). The user row is locked FOR UPDATE so
+    concurrent jobs from the same user can't race to a lost update.
     """
     cost, _ = estimate_cost(model, input_tokens, max_output_tokens)
-    if not user.is_unlimited and user.credits < cost:
-        return None, {"needed": cost, "remaining": user.credits}
     if not user.is_unlimited:
+        # Lock the row and re-read the authoritative balance.
+        db.refresh(user, with_for_update=True)
+        if user.credits < cost:
+            return None, {"needed": cost, "remaining": user.credits}
         user.credits -= cost
     log = UsageLog(
         user_id=user.id,
@@ -102,8 +109,7 @@ def pre_charge(db: Session, user: User, model: str, input_tokens: int,
         credits_deducted=0 if user.is_unlimited else cost,
     )
     db.add(log)
-    db.commit()
-    db.refresh(log)
+    db.flush()   # assign/persist within the transaction; caller commits
     return log, None
 
 
@@ -117,12 +123,21 @@ def reconcile(db: Session, log_id, user_id, model: str,
 
     Unlike a refund-only model, this charges the difference if the job used more
     than the reservation (clamped so a balance never goes negative) and refunds
-    if it used less. Idempotent: re-running with the same actuals is a no-op
-    because credits_deducted is rewritten to the settled cost each time.
+    if it used less. Concurrency-safe: the user row is locked FOR UPDATE first,
+    so concurrent reconciles (and a cancel racing a worker finalize) serialize
+    and settle to the same credits_deducted rather than losing an update.
     """
     try:
+        # Lock the user row FIRST (populate_existing forces a fresh read even if
+        # the object is already in this session), THEN read the now-stable log.
+        user = (
+            db.query(User)
+            .filter(User.id == user_id)
+            .with_for_update()
+            .populate_existing()
+            .first()
+        )
         log = db.query(UsageLog).filter(UsageLog.id == log_id).first()
-        user = db.query(User).filter(User.id == user_id).first()
         if log is None or user is None:
             return 0, "log_or_user_not_found"
 

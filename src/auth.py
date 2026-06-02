@@ -10,9 +10,14 @@ from jose import jwt, JWTError
 
 from db import get_session, User, MagicLink
 from email_sender import send_magic_link_email
+from ratelimit import limiter
 import errors
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# request-link is unauthenticated and mints a DB row + sends an email per call —
+# rate-limit it per IP to stop account/email flooding.
+REQUEST_LINK_RATE = "5/minute;40/hour"
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ALG = "HS256"
@@ -96,7 +101,8 @@ def get_current_user(
 
 
 @router.post("/request-link")
-async def request_link(body: RequestLinkBody, db: Session = Depends(get_session)):
+@limiter.limit(REQUEST_LINK_RATE)
+async def request_link(request: Request, body: RequestLinkBody, db: Session = Depends(get_session)):
     email = body.email.lower().strip()
     user = db.query(User).filter(User.email == email).first()
     if user is None:

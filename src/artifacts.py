@@ -62,7 +62,9 @@ def list_files(run_dir: Path):
     out = []
     try:
         for f in sorted(run_dir.iterdir()):
-            if not f.is_file():
+            # Skip symlinks: a job could plant `x.out -> ../<other-job>/...` or
+            # -> /etc/passwd and read it through its own /files endpoint.
+            if f.is_symlink() or not f.is_file():
                 continue
             if f.name in HIDDEN_FILES:
                 continue
