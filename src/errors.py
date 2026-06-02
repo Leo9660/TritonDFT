@@ -103,6 +103,15 @@ def agent_busy():
     )
 
 
+def too_many_active_jobs(active: int, maximum: int):
+    return APIError(
+        429, "too_many_active_jobs",
+        f"You already have {active} jobs running or queued (limit {maximum}). "
+        "Wait for one to finish before starting another.",
+        {"active": active, "maximum": maximum},
+    )
+
+
 # ───── Jobs ─────
 def job_not_found():
     return APIError(404, "job_not_found", "That job doesn't exist or isn't yours.")

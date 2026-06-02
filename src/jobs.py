@@ -25,6 +25,9 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 MAX_MESSAGE_CHARS = 8000
 MAX_CONVERSATION_CHARS = 2_000_000
 MAX_OUTPUT_TOKENS = 4096   # worst-case for pre-charge
+# Cap on a user's simultaneously queued+running jobs (bounds queue + $ spend).
+MAX_ACTIVE_JOBS_REGULAR = 3
+MAX_ACTIVE_JOBS_PRIVILEGED = 10
 
 
 class CreateJobBody(BaseModel):
@@ -81,6 +84,18 @@ async def create_job(
         raise errors.message_too_long(len(user_msg), MAX_MESSAGE_CHARS)
 
     model = resolve_model(body.model)
+
+    # Per-user cap on in-flight jobs — bounds queue depth and (with the credit
+    # system) real model spend. Privileged accounts get a higher cap.
+    privileged_cap = user.is_admin or user.is_unlimited
+    max_active = MAX_ACTIVE_JOBS_PRIVILEGED if privileged_cap else MAX_ACTIVE_JOBS_REGULAR
+    active = (
+        db.query(Job)
+        .filter(Job.user_id == user.id, Job.status.in_(("queued", "running")))
+        .count()
+    )
+    if active >= max_active:
+        raise errors.too_many_active_jobs(active, max_active)
 
     # CPU policy: only admins and unlimited accounts may run real DFT (CPU).
     # Everyone else is forced to script-only (generate inputs, no execution),
@@ -248,7 +263,12 @@ async def get_job_file(
     if name not in allowed:
         raise errors.job_not_found()
     fp = run_dir / name
+    # Defense in depth: the resolved path must still sit inside run_dir (guards
+    # against a symlink that slipped past the listing filter).
     try:
+        resolved = fp.resolve()
+        if resolved != run_dir and run_dir not in resolved.parents:
+            raise errors.job_not_found()
         data = fp.read_bytes()
     except OSError:
         raise errors.job_not_found()

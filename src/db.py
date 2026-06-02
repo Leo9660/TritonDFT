@@ -13,7 +13,16 @@ DATABASE_URL = os.environ.get(
 )
 
 Base = declarative_base()
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600, future=True)
+# Bound the pool: with ~10 pods (2 API + 8 workers) the default 5+10 per process
+# could exceed Postgres' default max_connections=100. 5+5 per process → ≤100.
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=3600,
+    pool_size=5,
+    max_overflow=5,
+    future=True,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
