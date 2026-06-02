@@ -346,14 +346,25 @@ class UnifiedGenerator:
             print(f"[UnifiedGenerator][Gemini] usage_metadata read failed: {e}")
 
     # ---------------- Claude Code CLI ----------------
+    # Claude Code's built-in tools. ALL are disallowed so the CLI behaves as a
+    # plain text generator — a user query can never drive it to read/write files
+    # or run commands in the worker. (Note: an empty --allowed-tools does NOT
+    # restrict anything; an explicit --disallowed-tools list is required.)
+    _CLAUDE_DISALLOWED_TOOLS = [
+        "Bash", "BashOutput", "KillShell", "KillBash", "Read", "Write", "Edit",
+        "NotebookEdit", "Glob", "Grep", "WebFetch", "WebSearch", "Task",
+        "TodoWrite", "SlashCommand", "ExitPlanMode",
+    ]
+
     def _call_claude_cli(self, prompt: str, max_new_tokens: int):
         """Generate via the Claude Code CLI in headless mode.
 
-        Uses the official client (authenticated by CLAUDE_CODE_OAUTH_TOKEN in the
-        environment) with ALL tools disabled, so it behaves as a plain text
-        generator and a user query can never drive it to touch the container.
-        The CLI reports exact USD cost per call, which we accumulate for precise
-        credit billing.
+        Authenticated by CLAUDE_CODE_OAUTH_TOKEN. Hardened two ways:
+          1. ALL built-in tools are disallowed (text-generator only).
+          2. The subprocess gets a MINIMAL env — the worker's other secrets
+             (DATABASE_URL, OPENAI_API_KEY, ...) are never exposed to it, so
+             even a tool-use escape couldn't exfiltrate them.
+        The CLI reports exact USD cost per call, accumulated for credit billing.
         """
         import subprocess
         import json as _json
@@ -366,16 +377,25 @@ class UnifiedGenerator:
         cmd = [
             "claude", "-p", prompt,
             "--output-format", "json",
-            "--allowed-tools", "",
+            "--disallowed-tools", *self._CLAUDE_DISALLOWED_TOOLS,
             "--system-prompt", sys_prompt,
         ]
         if self.model:
             cmd += ["--model", self.model]
 
-        text = ""
+        # Minimal env: only what the CLI itself needs — never the worker secrets.
+        safe_env = {
+            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/root"),
+            "CLAUDE_CODE_OAUTH_TOKEN": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""),
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": os.environ.get(
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"
+            ),
+        }
+
         try:
             res = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300, env=os.environ.copy()
+                cmd, capture_output=True, text=True, timeout=300, env=safe_env
             )
         except Exception as e:
             if self.verbose:
@@ -389,7 +409,6 @@ class UnifiedGenerator:
 
         try:
             data = _json.loads(res.stdout)
-            text = data.get("result", "") or ""
             usage = data.get("usage") or {}
             pt = (
                 int(usage.get("input_tokens", 0) or 0)
@@ -397,6 +416,7 @@ class UnifiedGenerator:
                 + int(usage.get("cache_read_input_tokens", 0) or 0)
             )
             ot = int(usage.get("output_tokens", 0) or 0)
+            # The call consumed quota whether or not it succeeded — bill it.
             self.last_prompt_tokens = pt
             self.last_output_tokens = ot
             self.total_prompt_tokens += pt
@@ -404,14 +424,20 @@ class UnifiedGenerator:
             cost = data.get("total_cost_usd")
             if isinstance(cost, (int, float)):
                 self.total_cost_usd += float(cost)
-            if self.verbose and data.get("is_error"):
-                print(f"[claude_cli] api_error_status={data.get('api_error_status')}")
+            if data.get("is_error"):
+                # Don't feed an error/refusal string back as a real generation —
+                # let the agent treat it as a failed call and retry.
+                if self.verbose:
+                    print(f"[claude_cli] api_error_status={data.get('api_error_status')}")
+                return [{"generated_text": ""}]
+            return [{"generated_text": data.get("result", "") or ""}]
         except Exception as e:
             if self.verbose:
                 print(f"[claude_cli] JSON parse failed: {e}; using raw stdout")
-            text = res.stdout
-
-        return [{"generated_text": text}]
+            # Still bill a text-based estimate so a parse glitch isn't free.
+            self.total_prompt_tokens += self._count_tokens_text(prompt)
+            self.total_output_tokens += self._count_tokens_text(res.stdout)
+            return [{"generated_text": res.stdout}]
 
     def reset_token_counters(self) -> None:
         self.total_prompt_tokens = 0
