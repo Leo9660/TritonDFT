@@ -1,0 +1,119 @@
+# Anti-purge renewer.
+#
+# NRP Nautilus purges any Deployment whose object age (metadata.creationTimestamp)
+# exceeds ~2 weeks (3 warning emails first). Rolling updates do NOT reset that
+# timestamp, so the only fix is to re-create the Deployment OBJECT.
+#
+# This CronJob does it with ZERO downtime: for each managed Deployment it
+#   1. dumps the LIVE spec (so it always matches the currently-deployed image —
+#      no drift / accidental rollback),
+#   2. `delete --cascade=orphan` — removes only the Deployment object; the
+#      ReplicaSet and its running pods stay up,
+#   3. re-`create` from the dumped spec — the new Deployment's pod-template-hash
+#      matches the orphaned ReplicaSet, so it ADOPTS it. No pod restarts.
+#
+# The resulting Deployment has a fresh creationTimestamp, resetting the purge
+# clock. PVCs / Secrets / Services are never touched (they aren't purged).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tritondft-renewer
+  namespace: datahub-llm
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tritondft-renewer
+  namespace: datahub-llm
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tritondft-renewer
+  namespace: datahub-llm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tritondft-renewer
+subjects:
+- kind: ServiceAccount
+  name: tritondft-renewer
+  namespace: datahub-llm
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tritondft-renewer
+  namespace: datahub-llm
+  labels:
+    k8s-app: tritondft-renewer
+spec:
+  # Sunday 04:00 America/Los_Angeles — keeps every managed Deployment younger
+  # than 7 days, comfortably under the ~14-day purge threshold.
+  schedule: "0 4 * * 0"
+  timeZone: "America/Los_Angeles"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            k8s-app: tritondft-renewer
+        spec:
+          serviceAccountName: tritondft-renewer
+          restartPolicy: Never
+          priorityClassName: opportunistic
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: feature.node.kubernetes.io/pci-10de.present
+                    operator: NotIn
+                    values: ["true"]
+          containers:
+          - name: renewer
+            image: docker.io/bitnami/kubectl:1.28
+            imagePullPolicy: IfNotPresent
+            resources:
+              requests: { cpu: "50m", memory: "64Mi" }
+              limits:   { cpu: "500m", memory: "256Mi" }
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              set -u
+              NS=datahub-llm
+              DEPLOYS="postgres tritondft tritondft-worker"
+              rc=0
+              for D in $DEPLOYS; do
+                echo "=== renewing deployment/$D ==="
+                if ! kubectl -n "$NS" get deploy "$D" -o yaml --show-managed-fields=false > /tmp/raw.yaml 2>/dev/null; then
+                  echo "WARN: deployment/$D not found — skipping"
+                  continue
+                fi
+                # Strip server-managed fields that block a fresh create.
+                # status: is always the last top-level block in `get -o yaml`.
+                sed '/^status:$/,$d' /tmp/raw.yaml \
+                  | grep -vE '^[[:space:]]+(creationTimestamp|resourceVersion|uid|generation|selfLink):' \
+                  > /tmp/d.yaml
+                kubectl -n "$NS" delete deploy "$D" --cascade=orphan --ignore-not-found
+                if kubectl -n "$NS" create -f /tmp/d.yaml; then
+                  echo "OK: deployment/$D recreated (clock reset, RS adopted)"
+                else
+                  echo "ERROR: failed to recreate deployment/$D"
+                  rc=1
+                fi
+              done
+              echo "=== final state ==="
+              kubectl -n "$NS" get deploy
+              exit $rc

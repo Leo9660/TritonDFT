@@ -63,6 +63,15 @@ RUN git clone --depth 1 --branch ${QE_VERSION} https://gitlab.com/QEF/q-e.git /w
 # ---------- Late-added Python deps (avoid invalidating QE build cache) ----------
 RUN pip install --no-cache-dir slowapi
 
+# ---------- Claude Code CLI (for the claude_cli generator backend) ----------
+# Headless `claude -p` is used as a text generator for claude-* models,
+# authenticated by CLAUDE_CODE_OAUTH_TOKEN at runtime.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g @anthropic-ai/claude-code \
+ && claude --version \
+ && rm -rf /var/lib/apt/lists/*
+
 # ---------- App source ----------
 COPY . /workspace
 RUN rm -rf /workspace/QuantumE.bak 2>/dev/null || true

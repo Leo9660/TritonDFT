@@ -81,6 +81,9 @@ class UnifiedGenerator:
         self.total_output_tokens = 0
         self.last_prompt_tokens = 0
         self.last_output_tokens = 0
+        # USD billed by the Claude Code CLI backend (it reports exact cost per
+        # call); used to bill credits precisely for claude_cli models.
+        self.total_cost_usd = 0.0
 
         self._tokenizer = None
 
@@ -184,6 +187,12 @@ class UnifiedGenerator:
         return_full_text: bool = False,
     ):
         max_new_tokens = max_new_tokens or self.default_max_new_tokens
+
+        # ---------- Claude via the Claude Code CLI (any "claude*" model) ----------
+        # Routed regardless of the configured backend so a single agent can mix
+        # OpenAI (gpt-*) and Claude (claude-*) models per job.
+        if self.model and self.model.lower().startswith("claude"):
+            return self._call_claude_cli(prompt, max_new_tokens)
 
         # ---------- HF ----------
         if self.backend == "hf":
@@ -336,11 +345,80 @@ class UnifiedGenerator:
         except Exception as e:
             print(f"[UnifiedGenerator][Gemini] usage_metadata read failed: {e}")
 
+    # ---------------- Claude Code CLI ----------------
+    def _call_claude_cli(self, prompt: str, max_new_tokens: int):
+        """Generate via the Claude Code CLI in headless mode.
+
+        Uses the official client (authenticated by CLAUDE_CODE_OAUTH_TOKEN in the
+        environment) with ALL tools disabled, so it behaves as a plain text
+        generator and a user query can never drive it to touch the container.
+        The CLI reports exact USD cost per call, which we accumulate for precise
+        credit billing.
+        """
+        import subprocess
+        import json as _json
+
+        sys_prompt = (
+            "You are a precise text/JSON generator inside an automated DFT "
+            "pipeline. Follow the user's instructions exactly and output only "
+            "what is requested — no tools, no preamble, no markdown code fences."
+        )
+        cmd = [
+            "claude", "-p", prompt,
+            "--output-format", "json",
+            "--allowed-tools", "",
+            "--system-prompt", sys_prompt,
+        ]
+        if self.model:
+            cmd += ["--model", self.model]
+
+        text = ""
+        try:
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300, env=os.environ.copy()
+            )
+        except Exception as e:
+            if self.verbose:
+                print(f"[claude_cli] subprocess failed: {e}")
+            return [{"generated_text": ""}]
+
+        if not res.stdout:
+            if self.verbose:
+                print(f"[claude_cli] empty stdout; stderr={(res.stderr or '')[:300]}")
+            return [{"generated_text": ""}]
+
+        try:
+            data = _json.loads(res.stdout)
+            text = data.get("result", "") or ""
+            usage = data.get("usage") or {}
+            pt = (
+                int(usage.get("input_tokens", 0) or 0)
+                + int(usage.get("cache_creation_input_tokens", 0) or 0)
+                + int(usage.get("cache_read_input_tokens", 0) or 0)
+            )
+            ot = int(usage.get("output_tokens", 0) or 0)
+            self.last_prompt_tokens = pt
+            self.last_output_tokens = ot
+            self.total_prompt_tokens += pt
+            self.total_output_tokens += ot
+            cost = data.get("total_cost_usd")
+            if isinstance(cost, (int, float)):
+                self.total_cost_usd += float(cost)
+            if self.verbose and data.get("is_error"):
+                print(f"[claude_cli] api_error_status={data.get('api_error_status')}")
+        except Exception as e:
+            if self.verbose:
+                print(f"[claude_cli] JSON parse failed: {e}; using raw stdout")
+            text = res.stdout
+
+        return [{"generated_text": text}]
+
     def reset_token_counters(self) -> None:
         self.total_prompt_tokens = 0
         self.total_output_tokens = 0
         self.last_prompt_tokens = 0
         self.last_output_tokens = 0
+        self.total_cost_usd = 0.0
 
     def _update_token_counts(
         self,
