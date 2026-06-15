@@ -44,7 +44,7 @@ class DFTAgent:
         auto_parallel: bool = False,
         parallel_exec: bool = False,
         parallel_np: int = 1,
-        run_mode: str = "mpirun", # "mpirun", "local", "slurm"
+        run_mode: str = "mpirun", # "mpirun", "local", "slurm", "cluster_package"
         auto_confirm: bool = False,
         hardware_description: Optional[str] = None,
         benchmark: bool = False,
@@ -77,7 +77,7 @@ class DFTAgent:
         self.hardware_description = hardware_description
         self.benchmark = benchmark
         self.benchmark_file = benchmark_file
-        valid_run_modes = {"mpirun", "local", "slurm"}
+        valid_run_modes = {"mpirun", "local", "slurm", "cluster_package"}
         if run_mode not in valid_run_modes:
             raise ValueError(f"run_mode must be one of {valid_run_modes}.")
         self.run_mode = run_mode
@@ -86,6 +86,7 @@ class DFTAgent:
         self.pseudo_dirs = self.config.pseudo
         self.pseudo_dir = self.config.pseudo.PBE
         self.qe_bin_prefix = self.config.qe_bin_dir
+        self.remote_qe_bin_prefix = self.config.remote_qe_bin_dir
         
         self.generator = UnifiedGenerator(
             backend=backend,
@@ -423,6 +424,36 @@ class DFTAgent:
                     "evaluation": None,
                 }
 
+            if self.run_mode == "cluster_package":
+                output_paths = [os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out") for idx in range(1, len(input_paths) + 1)]
+                slurm_paths = self.slurm_launcher.package(
+                    exec_name=fn_spec.exec,
+                    qe_prefix=self.remote_qe_bin_prefix,
+                    input_paths=input_paths,
+                    work_dir=work_dir,
+                    parallel_exec=self.parallel_exec,
+                    parallel_np=self.parallel_np,
+                    output_paths=output_paths,
+                )
+                return {
+                    "status": "cluster_package",
+                    "result_json": "",
+                    "result_judge": "cluster_package",
+                    "details": (
+                        f"Generated {len(input_paths)} QE input file(s) and "
+                        f"{len(slurm_paths)} Slurm script(s) for remote cluster execution."
+                    ),
+                    "input_paths": [str(p) for p in input_paths],
+                    "slurm_paths": slurm_paths,
+                    "output_paths": output_paths,
+                    "timing": {
+                        "script_gen_s": acc_script_gen_time,
+                        "parse_validate_s": acc_parse_validate_time,
+                        "dft_run_s": acc_dft_run_time,
+                    },
+                    "evaluation": None,
+                }
+
             # --- DFT Execution Phase ---
             t_dft_start = time.perf_counter()
             
@@ -733,6 +764,14 @@ class DFTAgent:
                     "Script-only run: generated the Quantum ESPRESSO input file(s) "
                     "for this query without executing them on CPU. Download the inputs "
                     "below; an admin can run them to produce results.", query)
+                return sub_problem_res
+
+            if isinstance(sub_problem_res, dict) and sub_problem_res.get("status") == "cluster_package":
+                self._write_analysis(
+                    "Cluster-package run: generated the Quantum ESPRESSO input file(s) "
+                    "and Slurm batch script(s) locally without requiring Quantum ESPRESSO "
+                    "or Slurm on this desktop. Upload the run directory to the cluster "
+                    "and submit the generated Slurm script(s) there.", query)
                 return sub_problem_res
 
             # Update Memory

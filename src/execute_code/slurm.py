@@ -101,6 +101,53 @@ class SlurmLauncher:
 
         return retcodes, output_paths
 
+    def package(
+        self,
+        exec_name: str,
+        qe_prefix: str,
+        input_paths: List[str],
+        work_dir: str,
+        parallel_exec: bool,
+        parallel_np: int,
+        output_paths: Optional[List[str]] = None,
+    ) -> List[str]:
+        """
+        Generate Slurm scripts next to already-created QE inputs without
+        submitting them. This is the local-desktop half of a future
+        SSH/cluster workflow: build files locally, then let a transport layer
+        upload this directory and run ``sbatch`` on the remote cluster.
+        """
+        work_dir_path = Path(work_dir)
+        work_dir_path.mkdir(parents=True, exist_ok=True)
+
+        script_paths: List[str] = []
+        for idx, input_path in enumerate(input_paths, start=1):
+            input_name = os.path.basename(str(input_path))
+            output_name = (
+                os.path.basename(str(output_paths[idx - 1]))
+                if output_paths and idx - 1 < len(output_paths)
+                else f"output_{idx}.out"
+            )
+            script_text = self._generate_slurm_script(
+                exec_name=exec_name,
+                qe_prefix=qe_prefix,
+                input_path=input_name,
+                output_path=output_name,
+                work_dir=".",
+                parallel_exec=parallel_exec,
+                parallel_np=parallel_np,
+                command_line=f"mpirun -np {parallel_np} $exe -in $INPUT > $OUTPUT",
+            )
+            script_path = work_dir_path / f"slurm_job_{idx}.sh"
+            script_path.write_text(f"{script_text.rstrip()}\n", encoding="utf-8")
+            script_path.chmod(0o755)
+            script_paths.append(str(script_path))
+
+            if self.verbose:
+                print(f"[slurm] Packaged script: {script_path}")
+
+        return script_paths
+
     def _generate_slurm_script(
         self,
         exec_name: str,

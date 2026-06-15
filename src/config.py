@@ -55,6 +55,7 @@ class PseudoPaths:
 class Config:
     pseudo: PseudoPaths
     qe_bin_dir: str
+    remote_qe_bin_dir: str
     path: Path
 
     @classmethod
@@ -72,9 +73,11 @@ class Config:
             data = yaml.safe_load(path.read_text()) or {}
             pseudo_section = data.get("pseudo", {})
             qe_bin_dir = data.get("qe_bin_dir")
+            remote_qe_bin_dir = data.get("remote_qe_bin_dir")
         else:
             pseudo_section = {}
             qe_bin_dir = None
+            remote_qe_bin_dir = None
 
         # Resolve every pseudo dir against repo_root so pw.x finds them
         # regardless of how deeply the run's cwd is nested (e.g. when
@@ -120,5 +123,6 @@ class Config:
         return cls(
             pseudo=pseudo,
             qe_bin_dir=final_qe_bin,
+            remote_qe_bin_dir=remote_qe_bin_dir or "",
             path=path,
         )
