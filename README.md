@@ -60,8 +60,23 @@ Refer to the QE documentation in `Doc/`, the package-specific `*/Doc/` folders, 
 
 ## Running the agent
 1. Export the APIs you need (OpenAI + Materials Project). Either run `export OPENAI_API_KEY=...` and `export MP_API_KEY=...` manually or reuse the commands you placed in `test/env_setup.sh`.
-2. Ensure the QE binaries you built reside in `QuantumE/bin` (the default path used inside `DFTAgent.py`). Update `self.qe_bin_prefix`/`self.pseudo_dir` there if your layout differs.
+2. For local execution, ensure the QE binaries you built reside in `QuantumE/bin` (the default path used inside `DFTAgent.py`). Update `self.qe_bin_prefix`/`self.pseudo_dir` there if your layout differs. Desktop-to-cluster package mode does not require local QE binaries.
 3. Execute the sample workflow: `python test/new_test.py`. The script initializes `DFTAgent`, submits a Si relaxation → SCF → NSCF request, and logs outputs to `evaluation.log` so you can verify that the full stack is wired correctly.
+
+### Desktop-to-cluster workflow
+For users who should not install Quantum ESPRESSO locally, initialize the agent with `run_mode="cluster_package"`. In this mode the agent still generates QE input files on the local desktop, but it does not call `pw.x`, `mpirun`, or `sbatch` locally. Instead it writes Slurm scripts beside the generated inputs in the run directory:
+
+```python
+agent = DFTAgent(
+    model="gpt-4o",
+    run_mode="cluster_package",
+    parallel_np=16,
+)
+```
+
+The generated `slurm_job_*.sh` files assume the cluster environment can expose QE with `module load quantum-espresso`. If your cluster requires an explicit remote binary directory, set `remote_qe_bin_dir` in `config/config.yaml`; otherwise leave it empty so the script runs `pw.x`, `bands.x`, etc. from the cluster `PATH`.
+
+After this package step, an SSH transport layer can upload the run directory to the cluster, run `sbatch slurm_job_*.sh` remotely, and fetch `output_*.out` back for parsing.
 
 ## [Optional] Deploy Backend in Dokcer
 ```
