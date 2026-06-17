@@ -16,7 +16,7 @@ from execute_code.slurm import SlurmLauncher
 from tool import get_spec, fetch_material_info_from_api_snippet, build_tool_requirements
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
 parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file, \
-validate_pseudos_exist
+validate_pseudos_exist, package_pseudos_for_remote
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
 
@@ -369,11 +369,30 @@ class DFTAgent:
                 )
 
             script_out = self.generator(script_prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
-            generated_scripts = script_out[0]['generated_text']
+            generated_scripts = ""
+            if script_out and isinstance(script_out, list):
+                generated_scripts = script_out[0].get('generated_text', '') or ""
             if self.verbose:
                 print(f"[solve_sub_problem] Script generated (Loop {loop_count})")
 
-            scripts = parse_scripts_block(generated_scripts)
+            try:
+                scripts = parse_scripts_block(generated_scripts)
+            except ValueError as exc:
+                debug_path = Path(self.work_dir) / f"script_generation_failed_{subproblem.get('id', problem_id)}_{loop_count}.txt"
+                debug_path.write_text(generated_scripts or "", encoding="utf-8")
+                if self.verbose:
+                    print(f"[solve_sub_problem][error] Raw generated script saved to {debug_path}")
+                if loop_count >= MAX_LOOPS:
+                    raise
+                error_code += (
+                    "Script generation failed before execution: "
+                    f"{exc}. The previous model output was empty or did not contain a usable QE input. "
+                    "Retry by outputting exactly one <scripts> block containing one or more "
+                    "<script>...</script> QE input files for only the current subproblem. "
+                    "Do not output JSON, Markdown fences, explanations, or analysis text.\n\n"
+                )
+                acc_script_gen_time += (time.perf_counter() - t_script_start)
+                continue
             
             # Work Dir setup & Write Inputs
             work_dir = self.work_dir
@@ -425,6 +444,11 @@ class DFTAgent:
                 }
 
             if self.run_mode == "cluster_package":
+                packaged_pseudos = package_pseudos_for_remote(
+                    input_paths,
+                    pseudo_dir=self.pseudo_dir,
+                    work_dir=work_dir,
+                )
                 output_paths = [os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out") for idx in range(1, len(input_paths) + 1)]
                 slurm_paths = self.slurm_launcher.package(
                     exec_name=fn_spec.exec,
@@ -434,6 +458,7 @@ class DFTAgent:
                     parallel_exec=self.parallel_exec,
                     parallel_np=self.parallel_np,
                     output_paths=output_paths,
+                    hardware_description=self.hardware_description,
                 )
                 return {
                     "status": "cluster_package",
@@ -446,6 +471,13 @@ class DFTAgent:
                     "input_paths": [str(p) for p in input_paths],
                     "slurm_paths": slurm_paths,
                     "output_paths": output_paths,
+                    "pseudo_paths": packaged_pseudos,
+                    "params_json": params_json,
+                    "tool": subproblem["tool"],
+                    "exec_name": fn_spec.exec,
+                    "parse_requirement_key": fn_spec.parse_requirement_key,
+                    "subproblem_id": subproblem_id,
+                    "work_dir": str(work_dir),
                     "timing": {
                         "script_gen_s": acc_script_gen_time,
                         "parse_validate_s": acc_parse_validate_time,
