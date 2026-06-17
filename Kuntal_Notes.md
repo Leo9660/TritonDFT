@@ -176,10 +176,3 @@ bash scripts/run_cluster_agent.sh
 
 The agent reads `.env.cluster` and launches the interactive `DFT request>` prompt.
 
-### Before git push
-- Do not commit `.env.cluster`; it contains local secrets/settings and is ignored.
-- Do not commit `tmp/`; it contains generated run outputs.
-- Review `example_slurm_job_file.txt` and make sure the example does not contain
-  private allocation/account details unless intentionally included.
-- Run `git status --short` and confirm only intended source/docs/template files
-  are staged.
