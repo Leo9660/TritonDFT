@@ -70,13 +70,48 @@ For users who should not install Quantum ESPRESSO locally, initialize the agent 
 agent = DFTAgent(
     model="gpt-4o",
     run_mode="cluster_package",
-    parallel_np=16,
 )
 ```
 
 The generated `slurm_job_*.sh` files assume the cluster environment can expose QE with `module load quantum-espresso`. If your cluster requires an explicit remote binary directory, set `remote_qe_bin_dir` in `config/config.yaml`; otherwise leave it empty so the script runs `pw.x`, `bands.x`, etc. from the cluster `PATH`.
 
 After this package step, an SSH transport layer can upload the run directory to the cluster, run `sbatch slurm_job_*.sh` remotely, and fetch `output_*.out` back for parsing.
+
+### Interactive SSH cluster agent
+Use `src/cluster_agent.py` when you want the agent to keep talking to the
+cluster between workflow steps. It generates one step locally, uploads the run
+directory, submits the generated Slurm script, waits for the job to leave
+`squeue`, syncs files back, parses the result, and then generates the next step
+using the returned output as memory.
+
+```bash
+bash scripts/run_cluster_agent.sh
+```
+
+On the first run, TritonDFT asks for your cluster username, login address, and
+remote working directory. It creates or reuses an SSH config entry, writes the
+cluster defaults to `.env.cluster`, then asks you to add `OPENAI_API_KEY` and
+`MP_API_KEY` there before continuing.
+
+Edit `example_slurm_job_file.txt` with your cluster's normal submission header
+and module commands. TritonDFT uses that file as the safe site-specific base and
+only replaces the walltime, Slurm task count, executable, input, output, and QE
+launch command for each generated job.
+
+The `.env.cluster` file is ignored by Git because it can contain API keys. The
+`CLUSTER_AGENT_SSH_TARGET` value can be an alias from `~/.ssh/config` or
+`user@hostname`.
+The agent asks for the remote parent directory at startup and before each DFT
+request; use a scratch/project path where your cluster user has write
+permission, such as `/scratch/$USER/qe_jobs`.
+The agent opens a persistent SSH ControlMaster connection by default so repeated
+uploads, submissions, queue checks, and downloads reuse the same login session.
+If `module load quantum-espresso` does not expose `pw.x` on the cluster `PATH`,
+add `--remote-qe-bin-dir /path/to/qe/bin`.
+The agent chooses the Slurm walltime and parallel launch settings from the
+generated QE input.
+Any command-line option still overrides the value from `.env.cluster`.
+Type `exit` or `quit` at the `DFT request>` prompt to stop the loop.
 
 ## [Optional] Deploy Backend in Dokcer
 ```

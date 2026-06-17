@@ -7,3 +7,5 @@ k8s/secret.yaml
 k8s/postgres.yaml
 build.log
 .env
+.env.cluster
+tmp
