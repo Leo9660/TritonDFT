@@ -20,6 +20,53 @@ validate_pseudos_exist, package_pseudos_for_remote
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
 
+
+def _generate_nonempty_text(
+    generator,
+    prompt: str,
+    *,
+    max_new_tokens: int,
+    attempts: int = 3,
+    verbose: bool = False,
+    purpose: str = "generation",
+) -> str:
+    """Retry transient empty model responses without changing the prompt."""
+    last_error: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = generator(
+                prompt,
+                max_new_tokens=max_new_tokens,
+                return_full_text=False,
+            )
+        except Exception as exc:
+            last_error = exc
+            if verbose:
+                print(f"[{purpose}] model call {attempt}/{attempts} failed: {exc}")
+        else:
+            text = ""
+            if result and isinstance(result, list):
+                text = result[0].get("generated_text", "") or ""
+            if text.strip():
+                return text
+            if verbose:
+                print(
+                    f"[{purpose}] model returned an empty response "
+                    f"({attempt}/{attempts}); retrying the same prompt."
+                )
+        if attempt < attempts:
+            time.sleep(attempt)
+
+    if last_error is not None:
+        raise RuntimeError(
+            f"{purpose} failed after {attempts} model calls; last error: {last_error}"
+        ) from last_error
+    raise RuntimeError(
+        f"{purpose} returned empty text after {attempts} model calls. "
+        f"The output-token budget was {max_new_tokens}."
+    )
+
+
 class DFTAgent:
     """
     DFTAgent: Minimal framework
@@ -44,7 +91,7 @@ class DFTAgent:
         auto_parallel: bool = False,
         parallel_exec: bool = False,
         parallel_np: int = 1,
-        run_mode: str = "mpirun", # "mpirun", "local", "slurm", "cluster_package"
+        run_mode: str = "mpirun", # "mpirun", "local", "slurm", "cluster_input", "cluster_package"
         auto_confirm: bool = False,
         hardware_description: Optional[str] = None,
         benchmark: bool = False,
@@ -77,7 +124,7 @@ class DFTAgent:
         self.hardware_description = hardware_description
         self.benchmark = benchmark
         self.benchmark_file = benchmark_file
-        valid_run_modes = {"mpirun", "local", "slurm", "cluster_package"}
+        valid_run_modes = {"mpirun", "local", "slurm", "cluster_input", "cluster_package"}
         if run_mode not in valid_run_modes:
             raise ValueError(f"run_mode must be one of {valid_run_modes}.")
         self.run_mode = run_mode
@@ -368,10 +415,15 @@ class DFTAgent:
                     tool_requirements=tool_requirements
                 )
 
-            script_out = self.generator(script_prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
-            generated_scripts = ""
-            if script_out and isinstance(script_out, list):
-                generated_scripts = script_out[0].get('generated_text', '') or ""
+            script_token_budget = max(self.max_new_tokens, 8192)
+            generated_scripts = _generate_nonempty_text(
+                self.generator,
+                script_prompt[0]["content"],
+                max_new_tokens=script_token_budget,
+                attempts=3,
+                verbose=self.verbose,
+                purpose="script_generation",
+            )
             if self.verbose:
                 print(f"[solve_sub_problem] Script generated (Loop {loop_count})")
 
@@ -443,13 +495,40 @@ class DFTAgent:
                     "evaluation": None,
                 }
 
-            if self.run_mode == "cluster_package":
+            if self.run_mode in {"cluster_input", "cluster_package"}:
+                output_paths = [
+                    os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out")
+                    for idx in range(1, len(input_paths) + 1)
+                ]
+                if self.run_mode == "cluster_input":
+                    return {
+                        "status": "cluster_input",
+                        "result_json": "",
+                        "result_judge": "cluster_input",
+                        "details": f"Generated {len(input_paths)} QE input file(s) for approval.",
+                        "input_paths": [str(p) for p in input_paths],
+                        "slurm_paths": [],
+                        "output_paths": output_paths,
+                        "pseudo_paths": [],
+                        "params_json": params_json,
+                        "tool": subproblem["tool"],
+                        "exec_name": fn_spec.exec,
+                        "parse_requirement_key": fn_spec.parse_requirement_key,
+                        "subproblem_id": subproblem_id,
+                        "work_dir": str(work_dir),
+                        "timing": {
+                            "script_gen_s": acc_script_gen_time,
+                            "parse_validate_s": acc_parse_validate_time,
+                            "dft_run_s": acc_dft_run_time,
+                        },
+                        "evaluation": None,
+                    }
+
                 packaged_pseudos = package_pseudos_for_remote(
                     input_paths,
                     pseudo_dir=self.pseudo_dir,
                     work_dir=work_dir,
                 )
-                output_paths = [os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out") for idx in range(1, len(input_paths) + 1)]
                 slurm_paths = self.slurm_launcher.package(
                     exec_name=fn_spec.exec,
                     qe_prefix=self.remote_qe_bin_prefix,
@@ -798,12 +877,13 @@ class DFTAgent:
                     "below; an admin can run them to produce results.", query)
                 return sub_problem_res
 
-            if isinstance(sub_problem_res, dict) and sub_problem_res.get("status") == "cluster_package":
+            if isinstance(sub_problem_res, dict) and sub_problem_res.get("status") in {
+                "cluster_input",
+                "cluster_package",
+            }:
                 self._write_analysis(
-                    "Cluster-package run: generated the Quantum ESPRESSO input file(s) "
-                    "and Slurm batch script(s) locally without requiring Quantum ESPRESSO "
-                    "or Slurm on this desktop. Upload the run directory to the cluster "
-                    "and submit the generated Slurm script(s) there.", query)
+                    "Cluster preparation run: generated the Quantum ESPRESSO input file(s) "
+                    "locally without executing Quantum ESPRESSO on this desktop.", query)
                 return sub_problem_res
 
             # Update Memory

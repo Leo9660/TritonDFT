@@ -79,10 +79,25 @@ After this package step, an SSH transport layer can upload the run directory to 
 
 ### Interactive SSH cluster agent
 Use `src/cluster_agent.py` when you want the agent to keep talking to the
-cluster between workflow steps. It generates one step locally, uploads the run
-directory, submits the generated Slurm script, waits for the job to leave
-`squeue`, syncs files back, parses the result, and then generates the next step
-using the returned output as memory.
+cluster between workflow steps. It first prints and saves the complete plan,
+including why every step is needed, then generates all requested QE inputs
+before running anything. A tabbed approval window shows the plan and every
+editable input file. No SSH connection or Slurm submission starts until
+`Approve & Run` is selected.
+
+Slurm scripts are deliberately not generated during this approval phase.
+Immediately before each approved `pw.x` or `ph.x` step runs, TritonDFT uploads
+a short, time-limited probe input, executes it on the remote cluster, fetches
+the reported k-point/band/FFT parallelization information, and then generates
+the real Slurm script from that runtime evidence. Lightweight post-processing
+executables are packaged at execution time without an unnecessary probe.
+
+For workflows beginning with `vc-relax`, later `pw.x` files show a
+`TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER` during review. After relaxation,
+TritonDFT replaces that marker with the final `CELL_PARAMETERS` and
+`ATOMIC_POSITIONS` immediately before the dependent file is uploaded. The
+approved pre-execution versions are retained under `approved_inputs/` in the
+run directory.
 
 ```bash
 bash scripts/run_cluster_agent.sh
