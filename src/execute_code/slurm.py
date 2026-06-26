@@ -127,6 +127,7 @@ class SlurmLauncher:
         parallel_np: int,
         output_paths: Optional[List[str]] = None,
         hardware_description: Optional[str] = None,
+        probe_output_paths: Optional[List[str]] = None,
     ) -> List[str]:
         """
         Generate Slurm scripts next to already-created QE inputs without
@@ -145,15 +146,31 @@ class SlurmLauncher:
                 if output_paths and idx - 1 < len(output_paths)
                 else f"output_{idx}.out"
             )
-            plan = self._generate_slurm_auto_parallel_plan(
-                exec_name=exec_name,
-                qe_prefix=qe_prefix,
-                input_path=str(input_path),
-                input_name=input_name,
-                output_name=output_name,
-                parallel_np=parallel_np,
-                hardware_description=hardware_description,
-            )
+            try:
+                plan = self._generate_slurm_auto_parallel_plan(
+                    exec_name=exec_name,
+                    qe_prefix=qe_prefix,
+                    input_path=str(input_path),
+                    input_name=input_name,
+                    output_name=output_name,
+                    parallel_np=parallel_np,
+                    hardware_description=hardware_description,
+                    probe_output_path=(
+                        probe_output_paths[idx - 1]
+                        if probe_output_paths and idx - 1 < len(probe_output_paths)
+                        else None
+                    ),
+                )
+            except Exception as exc:
+                print(
+                    "[slurm] Auto-parallel resource planning failed; "
+                    f"using deterministic fallback settings ({exc})."
+                )
+                plan = self._fallback_slurm_plan(
+                    exec_name=exec_name,
+                    input_path=str(input_path),
+                    parallel_np=parallel_np,
+                )
             script_text = self._generate_slurm_script(
                 exec_name=exec_name,
                 qe_prefix=qe_prefix,
@@ -167,7 +184,8 @@ class SlurmLauncher:
                 nodes=plan["nodes"],
                 tasks_per_node=plan["tasks_per_node"],
             )
-            script_path = work_dir_path / f"slurm_job_{idx}.sh"
+            input_stem = Path(input_path).stem
+            script_path = work_dir_path / f"slurm_job_{input_stem}.sh"
             script_path.write_text(f"{script_text.rstrip()}\n", encoding="utf-8")
             script_path.chmod(0o755)
             script_paths.append(str(script_path))
@@ -176,6 +194,47 @@ class SlurmLauncher:
                 print(f"[slurm] Packaged script: {script_path}")
 
         return script_paths
+
+    def package_probe(
+        self,
+        *,
+        exec_name: str,
+        qe_prefix: str,
+        input_paths: List[str],
+        work_dir: str,
+        parallel_np: int,
+    ) -> Tuple[List[str], List[str], List[str]]:
+        """Create short probe inputs/scripts for remote execution."""
+        work_dir_path = Path(work_dir)
+        probe_inputs: List[str] = []
+        probe_outputs: List[str] = []
+        probe_scripts: List[str] = []
+        probe_np = max(1, parallel_np)
+        for input_path in input_paths:
+            probe_input = _create_probe_script(input_path, exec_name=exec_name)
+            input_stem = Path(input_path).stem
+            probe_output = work_dir_path / f"{input_stem}_probe.out"
+            probe_script = work_dir_path / f"slurm_probe_{input_stem}.sh"
+            script_text = render_slurm_script(
+                exec_path=os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name,
+                input_path=Path(probe_input).name,
+                output_path=probe_output.name,
+                command_line=(
+                    f"export OMP_NUM_THREADS=1; mpirun --allow-run-as-root -np {probe_np} "
+                    "$exe -in $INPUT > $OUTPUT"
+                ),
+                nodes=1,
+                tasks_per_node=probe_np,
+                work_dir=".",
+                time_limit="00:10:00",
+                template_path=self.template_path,
+            )
+            probe_script.write_text(script_text.rstrip() + "\n", encoding="utf-8")
+            probe_script.chmod(0o755)
+            probe_inputs.append(str(probe_input))
+            probe_outputs.append(str(probe_output))
+            probe_scripts.append(str(probe_script))
+        return probe_inputs, probe_outputs, probe_scripts
 
     def _generate_slurm_script(
         self,
@@ -247,6 +306,7 @@ class SlurmLauncher:
         output_name: str,
         parallel_np: int,
         hardware_description: Optional[str],
+        probe_output_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         exec_path = os.path.join(qe_prefix, exec_name) if qe_prefix else exec_name
         try:
@@ -255,11 +315,13 @@ class SlurmLauncher:
             input_script = ""
 
         hw_desc = hardware_description or _default_slurm_hardware_description(parallel_np)
-        probe_output = (
-            "No probe output is available because this calculation is being packaged locally "
-            "for later remote Slurm execution. Decide from the QE input, executable, and "
-            "hardware description. Be conservative only when the workload is genuinely small."
-        )
+        if probe_output_path and Path(probe_output_path).exists():
+            probe_output = _extract_probe_summary(probe_output_path)
+        else:
+            probe_output = (
+                "No probe output is available. Decide from the QE input, executable, and "
+                "hardware description. Be conservative only when the workload is genuinely small."
+            )
         prompt_text = auto_parallel_prompt.format(
             exec_path="$exe",
             input_script=input_script,
@@ -321,6 +383,52 @@ The Command line must use $exe, $INPUT, and $OUTPUT exactly, so it can be insert
             "time_limit": time_limit,
         }
 
+    def _fallback_slurm_plan(
+        self,
+        *,
+        exec_name: str,
+        input_path: str,
+        parallel_np: int,
+    ) -> Dict[str, Any]:
+        """Build a safe package when the optional LLM resource planner fails."""
+        mpi_ranks = self._parallel_np_for(exec_name, input_path, parallel_np)
+        if exec_name in {"bands.x", "dos.x", "q2r.x", "matdyn.x", "dynmat.x", "ev.x"}:
+            mpi_ranks = 1
+
+        try:
+            input_text = Path(input_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            input_text = ""
+
+        calculation_match = re.search(
+            r"(?mi)^\s*calculation\s*=\s*['\"]([^'\"]+)['\"]",
+            input_text,
+        )
+        calculation = calculation_match.group(1).strip().lower() if calculation_match else ""
+        if self.default_time_limit:
+            time_limit = self.default_time_limit
+        elif exec_name == "ph.x":
+            time_limit = "12:00:00"
+        elif calculation in {"vc-relax", "relax"}:
+            time_limit = "04:00:00"
+        elif calculation in {"nscf", "bands"}:
+            time_limit = "02:00:00"
+        elif exec_name == "pw.x":
+            time_limit = "01:00:00"
+        else:
+            time_limit = "00:30:00"
+
+        return {
+            "command_line": (
+                f"export OMP_NUM_THREADS=1; mpirun --allow-run-as-root -np {mpi_ranks} "
+                "$exe -in $INPUT > $OUTPUT"
+            ),
+            "mpi_ranks": mpi_ranks,
+            "nodes": 1,
+            "tasks_per_node": mpi_ranks,
+            "time_limit": time_limit,
+        }
+
     def _time_limit_for(self, exec_name: str, input_path: str, parallel_np: int) -> str:
         return self.default_time_limit or "00:10:00"
 
@@ -353,7 +461,7 @@ The Command line must use $exe, $INPUT, and $OUTPUT exactly, so it can be insert
         output_paths: Optional[List[str]] = None,
     ) -> List[Optional[str]]:
         work_dir_path = Path(work_dir)
-        probe_paths = [_create_probe_script(path) for path in input_paths]
+        probe_paths = [_create_probe_script(path, exec_name=exec_name) for path in input_paths]
         probe_outputs: List[Path] = []
         for idx in range(1, len(probe_paths) + 1):
             if output_paths and idx - 1 < len(output_paths):
@@ -622,18 +730,26 @@ def _format_slurm_minutes(minutes: int) -> str:
     return f"{hours:02d}:{mins:02d}:00"
 
 
-def _create_probe_script(input_path: str) -> str:
+def _create_probe_script(input_path: str, *, exec_name: str = "pw.x") -> str:
     original = Path(input_path)
     probe_path = original.with_name(f"{original.stem}_probe{original.suffix}")
     content = original.read_text()
-    content = _ensure_parameter(content, "max_seconds", "120")
-    content = _ensure_parameter(content, "verbosity", "'high'")
+    namelist = "inputph" if exec_name == "ph.x" else "control"
+    content = _ensure_parameter(content, "max_seconds", "120", namelist=namelist)
+    if exec_name == "pw.x":
+        content = _ensure_parameter(content, "verbosity", "'high'", namelist="control")
     probe_path.write_text(content, encoding="utf-8")
     return str(probe_path)
 
 
-def _ensure_parameter(content: str, key: str, value: str) -> str:
-    block_pattern = re.compile(r"^\s*&control\b", re.IGNORECASE)
+def _ensure_parameter(
+    content: str,
+    key: str,
+    value: str,
+    *,
+    namelist: str = "control",
+) -> str:
+    block_pattern = re.compile(rf"^\s*&{re.escape(namelist)}\b", re.IGNORECASE)
     lines = content.splitlines()
     start_idx = None
     for idx, line in enumerate(lines):
@@ -642,7 +758,7 @@ def _ensure_parameter(content: str, key: str, value: str) -> str:
             break
 
     if start_idx is None:
-        insertion = f"&control\n{key} = {value}\n/\n"
+        insertion = f"&{namelist}\n{key} = {value}\n/\n"
         return insertion + content
 
     key_pattern = re.compile(rf"^\s*{key}\s*=", re.IGNORECASE)

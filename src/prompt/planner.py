@@ -11,8 +11,9 @@ planner_messages = {
 	Problem: What to calculate
 	Tool: Tool to use
 	Required input: Required input parameters (Do not give any concrete parameter value here, just describe what is needed)
+	Why: Why this step is necessary and what later step or requested result depends on it
     These fields MUST appear on separate lines, each separated by a newline; otherwise, the output is considered incorrect.
-    - Keep each subproblem short (2-3 lines).
+    - Keep each subproblem short (exactly the four required field lines).
     - Do not output anything outside <subproblem> blocks.
 
     Core rules:
@@ -33,18 +34,21 @@ planner_messages = {
     Problem: Do an SCF calculation to converge charge density
     Tool: pw_scf
     Required input: diamond Si structure
+    Why: Establish the self-consistent charge density required by the band calculation
     </subproblem1>
 
     <subproblem2>
     Problem: Perform NSCF calculation along the high-symmetry path
     Tool: pw_nscf
     Required input: same structure, SCF charge density
+    Why: Evaluate eigenvalues on the requested high-symmetry path using the converged charge density
     </subproblem2>
 
     <subproblem3>
     Problem: Post-process bands to obtain band structure
     Tool: bands_post
     Required input: NSCF results
+    Why: Convert the band calculation output into the requested band-structure result
     </subproblem3>
 
     ---
@@ -56,7 +60,7 @@ planner_messages = {
     Problem: Find equilibrium lattice constant by relaxing the cell volume and atomic positions
     Tool: pw_vc_relax
     Required input: BCC Na structure
-    Output: equilibrium lattice constant (Å)
+    Why: Determine the equilibrium cell and atomic coordinates requested by the user
     </subproblem1>
     ---
 

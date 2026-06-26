@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -12,10 +13,12 @@ from typing import Any, Dict, List, Optional
 from DFTAgent import DFTAgent
 from prompt import get_prompt
 from prompt.tool_requirements import get_parse_requirement
+from tool import get_spec
 from utils import (
     extract_json_brutal,
     get_qe_result,
     output_to_log_file,
+    package_pseudos_for_remote,
     preprocess_output_list,
 )
 
@@ -415,23 +418,315 @@ class SSHClusterTransport:
         return match.group(1) if match else ""
 
 
+RELAXED_STRUCTURE_PLACEHOLDER = """! TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER_BEGIN
+! Relaxed CELL_PARAMETERS and ATOMIC_POSITIONS from the vc-relax step will be inserted here before execution.
+! TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER_END"""
+
+
+def _plan_text(subproblems: List[Dict[str, Any]]) -> str:
+    lines = ["TritonDFT execution plan", "========================"]
+    for idx, step in enumerate(subproblems, start=1):
+        tool_name = step.get("tool") or "unknown"
+        why = (step.get("why") or "").strip()
+        if not why:
+            try:
+                why = get_spec(tool_name).description
+            except Exception:
+                why = "This step contributes to the requested workflow result."
+        lines.extend(
+            [
+                "",
+                f"{idx}. {step.get('problem') or tool_name}",
+                f"   Tool: {tool_name}",
+                f"   Required input: {step.get('input') or 'Generated from the user request and workflow context'}",
+                f"   Why: {why}",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Approval gate",
+            "-------------",
+            "All input files are generated before execution. No cluster job is submitted until you approve them.",
+            "Files after vc-relax contain a visible relaxed-structure placeholder; it is replaced with the final",
+            "vc-relax CELL_PARAMETERS and ATOMIC_POSITIONS immediately before that file is submitted.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _card_block_span(text: str, card: str) -> Optional[tuple[int, int]]:
+    header = re.search(rf"(?mi)^[ \t]*{re.escape(card)}(?:\s*\([^)]+\))?[^\n]*\n?", text)
+    if not header:
+        return None
+    next_header = re.search(
+        r"(?mi)^[ \t]*(?:ATOMIC_SPECIES|ATOMIC_POSITIONS|CELL_PARAMETERS|K_POINTS|"
+        r"ATOMIC_FORCES|OCCUPATIONS|CONSTRAINTS|HUBBARD|&[A-Z_]+)\b",
+        text[header.end():],
+    )
+    end = header.end() + next_header.start() if next_header else len(text)
+    return header.start(), end
+
+
+def _add_relaxed_structure_placeholder(path: str) -> bool:
+    input_path = Path(path)
+    text = input_path.read_text(encoding="utf-8")
+    if "TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER_BEGIN" in text:
+        return True
+
+    spans = [
+        span
+        for span in (
+            _card_block_span(text, "ATOMIC_POSITIONS"),
+            _card_block_span(text, "CELL_PARAMETERS"),
+        )
+        if span is not None
+    ]
+    if not spans:
+        return False
+
+    insert_at = min(start for start, _ in spans)
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + text[end:]
+
+    text = re.sub(
+        r"(?mi)^([ \t]*ibrav\s*=\s*)[-+]?\d+(\s*,?.*)$",
+        r"\g<1>0\2",
+        text,
+    )
+    text = re.sub(
+        r"(?mi)^[ \t]*(?:celldm\s*\(\s*[1-6]\s*\)|A|B|C|cosAB|cosAC|cosBC)\s*=.*\n?",
+        "",
+        text,
+    )
+    marker = RELAXED_STRUCTURE_PLACEHOLDER + "\n"
+    text = text[:insert_at] + marker + text[insert_at:]
+    input_path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    return True
+
+
+def _set_workflow_prefix(path: str, prefix: str = "tritondft_workflow") -> None:
+    input_path = Path(path)
+    text = input_path.read_text(encoding="utf-8")
+    updated = re.sub(
+        r"(?mi)^([ \t]*prefix\s*=\s*)['\"][^'\"]+['\"](\s*,?.*)$",
+        rf"\g<1>'{prefix}'\2",
+        text,
+    )
+    if updated != text:
+        input_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
+
+
+def _extract_relaxed_structure(output_path: str) -> str:
+    from evaluate.relax_eval import (
+        _extract_cell,
+        _extract_pos,
+        _normalize_cell_to_angstrom,
+        _slice_final_window,
+    )
+
+    output_text = Path(output_path).read_text(encoding="utf-8", errors="replace")
+    final_window = _slice_final_window(output_text)
+    if not final_window:
+        raise RuntimeError(f"No final relaxed coordinates found in {output_path}.")
+    cell = _normalize_cell_to_angstrom(_extract_cell(final_window)).rstrip()
+    positions = _extract_pos(final_window).rstrip()
+    return f"{cell}\n{positions}\n"
+
+
+def _insert_relaxed_structure(path: str, structure_block: str) -> bool:
+    input_path = Path(path)
+    text = input_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"(?ms)^! TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER_BEGIN\n"
+        r".*?"
+        r"^! TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER_END\n?"
+    )
+    if not pattern.search(text):
+        return False
+    updated = pattern.sub(structure_block.rstrip() + "\n", text, count=1)
+    input_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    return True
+
+
+def _input_validation_errors(path: str) -> List[str]:
+    text = Path(path).read_text(encoding="utf-8")
+    errors: List[str] = []
+    if re.search(r"(?mi)^\s*&system\b", text):
+        required_patterns = {
+            "&control namelist": r"(?mi)^\s*&control\b",
+            "&electrons namelist": r"(?mi)^\s*&electrons\b",
+            "ATOMIC_SPECIES card": r"(?mi)^\s*ATOMIC_SPECIES\b",
+            "K_POINTS card": r"(?mi)^\s*K_POINTS\b",
+        }
+        for label, pattern in required_patterns.items():
+            if not re.search(pattern, text):
+                errors.append(f"missing {label}")
+        has_positions = re.search(r"(?mi)^\s*ATOMIC_POSITIONS\b", text)
+        has_placeholder = "TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER_BEGIN" in text
+        if not has_positions and not has_placeholder:
+            errors.append("missing ATOMIC_POSITIONS or relaxed-structure placeholder")
+        control = re.search(r"(?mis)^\s*&control\b(.*?)^\s*/\s*$", text)
+        if control and not re.search(r"(?mi)^\s*calculation\s*=", control.group(1)):
+            errors.append("&control is missing calculation")
+    elif re.search(r"(?mi)^\s*&inputph\b", text):
+        for key in ("prefix", "outdir", "fildyn", "tr2_ph"):
+            if not re.search(rf"(?mi)^\s*{re.escape(key)}\s*=", text):
+                errors.append(f"&inputph is missing {key}")
+    return errors
+
+
+def _approve_inputs_popup(plan: str, input_paths: List[str]) -> bool:
+    print("\n[approval] All inputs are ready.")
+    print("[approval] Opening the TritonDFT approval window; execution is paused until you choose Approve & Run or Cancel.")
+    print("[approval] If the window is behind your IDE, use Cmd-Tab to select Python/TritonDFT.")
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+
+        root = tk.Tk()
+        root.title("TritonDFT plan and input approval")
+        root.geometry("1100x760")
+        root.update_idletasks()
+        root.deiconify()
+        root.lift()
+        root.attributes("-topmost", True)
+        root.focus_force()
+
+        def release_topmost() -> None:
+            try:
+                root.attributes("-topmost", False)
+                root.lift()
+                root.focus_force()
+            except tk.TclError:
+                pass
+
+        root.after(750, release_topmost)
+        notebook = ttk.Notebook(root)
+        notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        plan_text = tk.Text(notebook, wrap="word", font=("Menlo", 12))
+        plan_text.insert("1.0", plan)
+        plan_text.configure(state="disabled")
+        notebook.add(plan_text, text="Complete plan")
+
+        editors: Dict[str, Any] = {}
+        for path in input_paths:
+            editor = tk.Text(notebook, wrap="none", undo=True, font=("Menlo", 11))
+            editor.insert("1.0", Path(path).read_text(encoding="utf-8"))
+            notebook.add(editor, text=Path(path).name)
+            editors[path] = editor
+
+        validation_text = tk.Text(notebook, wrap="word", font=("Menlo", 11))
+        validation_text.configure(state="disabled")
+        notebook.add(validation_text, text="Validation")
+
+        decision = {"approved": False}
+
+        def close_window() -> None:
+            """Destroy Tk from inside its event loop before execution continues."""
+            try:
+                root.withdraw()
+                root.update_idletasks()
+                root.destroy()
+            except tk.TclError:
+                pass
+
+        def save_edits() -> None:
+            for path, editor in editors.items():
+                Path(path).write_text(editor.get("1.0", "end-1c").rstrip() + "\n", encoding="utf-8")
+
+        def refresh_validation() -> List[str]:
+            save_edits()
+            messages: List[str] = []
+            for path in input_paths:
+                errors = _input_validation_errors(path)
+                if errors:
+                    messages.append(f"{Path(path).name}:\n  - " + "\n  - ".join(errors))
+            report = (
+                "\n\n".join(messages)
+                if messages
+                else "Basic structural validation passed for every generated input."
+            )
+            validation_text.configure(state="normal")
+            validation_text.delete("1.0", "end")
+            validation_text.insert("1.0", report)
+            validation_text.configure(state="disabled")
+            return messages
+
+        def approve() -> None:
+            messages = refresh_validation()
+            if messages:
+                notebook.select(validation_text)
+                messagebox.showerror(
+                    "Input validation failed",
+                    "One or more inputs are incomplete. Fix the listed issues before approval.",
+                )
+                return
+            decision["approved"] = True
+            # Schedule destruction inside Tk's own event loop. mainloop() must
+            # return before any SSH/probe/cluster work starts.
+            root.withdraw()
+            root.update_idletasks()
+            root.after_idle(close_window)
+
+        def cancel() -> None:
+            if messagebox.askyesno("Cancel workflow", "Cancel without submitting any cluster jobs?"):
+                root.withdraw()
+                root.update_idletasks()
+                root.after_idle(close_window)
+
+        controls = ttk.Frame(root)
+        controls.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(
+            controls,
+            text="Review or edit any tab. Approve & Run saves the edits and unlocks cluster submission.",
+        ).pack(side="left")
+        ttk.Button(controls, text="Cancel", command=cancel).pack(side="right", padx=(8, 0))
+        ttk.Button(controls, text="Approve & Run", command=approve).pack(side="right")
+        ttk.Button(controls, text="Validate", command=refresh_validation).pack(side="right", padx=(0, 8))
+        root.protocol("WM_DELETE_WINDOW", cancel)
+        refresh_validation()
+        root.mainloop()
+        return decision["approved"]
+    except Exception as exc:
+        print(f"[approval] GUI unavailable ({exc}). Falling back to terminal approval.")
+        print("\n" + plan)
+        print("Generated input files:")
+        for path in input_paths:
+            print(f"  - {path}")
+        while True:
+            answer = input(
+                "Type 'approve' to run, 'edit' after editing the files above, or 'cancel': "
+            ).strip().lower()
+            if answer in {"approve", "yes", "y"}:
+                return True
+            if answer in {"cancel", "no", "n"}:
+                return False
+            if answer == "edit":
+                print("Edit the files in your editor, then return here to approve or cancel.")
+
+
 class RemoteClusterDFTAgent:
     """
     Orchestrates DFTAgent generation locally and QE execution remotely.
 
-    For every subproblem:
-    1. Generate QE input and Slurm script locally.
-    2. Upload the run directory to the cluster.
-    3. Submit the Slurm script remotely.
-    4. Wait for completion unless interrupted.
-    5. Fetch outputs back.
-    6. Parse/judge results locally and pass memory to the next subproblem.
+    The full plan and every QE input are generated locally first. The user can
+    edit them in an approval window, and no cluster job is submitted until the
+    complete set is approved. Downstream pw.x inputs use a placeholder that is
+    replaced with the final vc-relax structure immediately before submission.
     """
 
-    def __init__(self, dft_agent: DFTAgent, transport: SSHClusterTransport):
+    def __init__(
+        self,
+        dft_agent: DFTAgent,
+        transport: SSHClusterTransport,
+        approval_callback=None,
+    ):
         self.agent = dft_agent
         self.transport = transport
-        self.agent.run_mode = "cluster_package"
+        self.approval_callback = approval_callback or _approve_inputs_popup
+        self.agent.run_mode = "cluster_input"
 
     def run(
         self,
@@ -442,7 +737,6 @@ class RemoteClusterDFTAgent:
         task_type: str = "",
         material_name: str = "",
     ) -> Dict[str, Any]:
-        self.transport.ensure_connection()
         self.agent._prepare_run_directory(
             query=query,
             material_name=material_name,
@@ -459,24 +753,148 @@ class RemoteClusterDFTAgent:
         if not subproblems:
             raise RuntimeError("No valid plan was generated.")
 
-        total_memory = ""
-        results: List[Dict[str, Any]] = []
-        conclusions: List[str] = []
+        plan = _plan_text(subproblems)
+        print("\n" + plan)
+        (self.agent.work_dir / "workflow_plan.txt").write_text(plan, encoding="utf-8")
+        (self.agent.work_dir / "workflow_plan.json").write_text(
+            json.dumps(subproblems, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
 
+        packages: List[Dict[str, Any]] = []
+        input_paths: List[str] = []
+        relaxation_seen = False
+        workflow_generation_context = (
+            "Generate this input now as part of one pre-approved workflow. Use the exact shared "
+            "Quantum ESPRESSO prefix 'tritondft_workflow' and outdir './'. Keep filenames consistent "
+            "between dependent phonon/post-processing steps: ph.x fildyn='tritondft_workflow.dyn', "
+            "q2r.x reads that fildyn and writes flfrc='tritondft_workflow.fc', and matdyn.x reads "
+            "that flfrc. Choose this step's numerical and physical parameters now; do not wait for "
+            "an earlier calculation to run. The complete workflow plan is:\n"
+            + plan
+        )
+        placeholder_memory = (
+            "The workflow inputs are being generated before execution. For any pw.x step after "
+            "vc-relax, choose all numerical and physical parameters now, independently of the "
+            "relaxation result. Use the same material and pseudopotentials. The final relaxed "
+            "CELL_PARAMETERS and ATOMIC_POSITIONS will be inserted automatically before execution."
+        )
         for idx, step in enumerate(subproblems, start=1):
-            print(f"\n[cluster-agent] step {idx}/{len(subproblems)}: {step.get('problem')}\n")
+            print(f"[cluster-agent] generating input {idx}/{len(subproblems)}: {step.get('problem')}")
             package = self.agent.solve_sub_problem(
                 step,
                 problem_id=idx,
                 query=query,
-                total_memory=total_memory,
+                total_memory=(
+                    workflow_generation_context
+                    + ("\n" + placeholder_memory if relaxation_seen else "")
+                ),
                 material_info=material_info,
             )
-            if package.get("status") != "cluster_package":
-                raise RuntimeError(f"Expected cluster_package result, got: {package}")
+            if package.get("status") != "cluster_input":
+                raise RuntimeError(f"Expected cluster_input result, got: {package}")
+
+            for path in package.get("input_paths", []):
+                _set_workflow_prefix(path)
+            if relaxation_seen and package.get("exec_name") == "pw.x":
+                for path in package.get("input_paths", []):
+                    if not _add_relaxed_structure_placeholder(path):
+                        raise RuntimeError(
+                            f"Could not add the relaxed-structure placeholder to {path}."
+                        )
+
+            packages.append(package)
+            input_paths.extend(package.get("input_paths", []))
+            if step.get("tool") == "pw_vc_relax":
+                relaxation_seen = True
+
+        manifest = {
+            "query": query,
+            "plan": subproblems,
+            "input_files": [str(Path(path).name) for path in input_paths],
+            "status": "awaiting_approval",
+        }
+        manifest_path = self.agent.work_dir / "approval_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        if not self.approval_callback(plan, input_paths):
+            manifest["status"] = "cancelled"
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            return {
+                "status": "cancelled",
+                "run_dir": str(self.agent.work_dir),
+                "plan": subproblems,
+                "input_paths": input_paths,
+            }
+
+        manifest["status"] = "approved"
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        approved_dir = self.agent.work_dir / "approved_inputs"
+        approved_dir.mkdir(parents=True, exist_ok=True)
+        for path in input_paths:
+            shutil.copy2(path, approved_dir / Path(path).name)
+        package_pseudos_for_remote(
+            input_paths,
+            pseudo_dir=self.agent.pseudo_dir,
+            work_dir=str(self.agent.work_dir),
+        )
+        self.transport.ensure_connection()
+
+        total_memory = ""
+        results: List[Dict[str, Any]] = []
+        conclusions: List[str] = []
+        relaxed_structure = ""
+
+        for idx, (step, package) in enumerate(zip(subproblems, packages), start=1):
+            print(f"\n[cluster-agent] step {idx}/{len(subproblems)}: {step.get('problem')}\n")
+            for path in package.get("input_paths", []):
+                if "TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER_BEGIN" in Path(path).read_text(
+                    encoding="utf-8"
+                ):
+                    if not relaxed_structure:
+                        raise RuntimeError(
+                            f"{Path(path).name} needs the relaxed structure, but no completed "
+                            "relaxation output is available."
+                        )
+                    _insert_relaxed_structure(path, relaxed_structure)
 
             local_run_dir = Path(package["work_dir"]).resolve()
             remote_dir = self.transport.remote_dir_for(local_run_dir)
+
+            probe_output_paths: List[str] = []
+            if package.get("exec_name") in {"pw.x", "ph.x"}:
+                print("[cluster-agent] running a short remote probe before choosing Slurm parallelism.")
+                _, probe_output_paths, probe_script_paths = self.agent.slurm_launcher.package_probe(
+                    exec_name=package["exec_name"],
+                    qe_prefix=self.agent.remote_qe_bin_prefix,
+                    input_paths=package.get("input_paths", []),
+                    work_dir=str(local_run_dir),
+                    parallel_np=self.agent.parallel_np,
+                )
+                self.transport.upload_directory(local_run_dir, remote_dir)
+                probe_jobs: List[ClusterJob] = []
+                for script_path in probe_script_paths:
+                    probe_job = self.transport.submit(remote_dir, Path(script_path).name)
+                    print(
+                        f"[cluster-agent] submitted probe {Path(script_path).name}: "
+                        f"{probe_job.submit_output}"
+                    )
+                    probe_jobs.append(probe_job)
+                for probe_job in probe_jobs:
+                    self.transport.wait_for_job(probe_job)
+                self.transport.fetch_directory(remote_dir, local_run_dir)
+
+            package["slurm_paths"] = self.agent.slurm_launcher.package(
+                exec_name=package["exec_name"],
+                qe_prefix=self.agent.remote_qe_bin_prefix,
+                input_paths=package.get("input_paths", []),
+                work_dir=str(local_run_dir),
+                parallel_exec=self.agent.parallel_exec,
+                parallel_np=self.agent.parallel_np,
+                output_paths=package.get("output_paths", []),
+                hardware_description=self.agent.hardware_description,
+                probe_output_paths=probe_output_paths,
+            )
             self.transport.upload_directory(local_run_dir, remote_dir)
 
             jobs: List[ClusterJob] = []
@@ -490,6 +908,14 @@ class RemoteClusterDFTAgent:
                 self.transport.wait_for_job(job)
 
             self.transport.fetch_directory(remote_dir, local_run_dir)
+            if step.get("tool") == "pw_vc_relax":
+                output_paths = package.get("output_paths", [])
+                if not output_paths:
+                    raise RuntimeError("Relaxation package did not define an output path.")
+                relaxed_structure = _extract_relaxed_structure(output_paths[0])
+                (local_run_dir / "relaxed_structure.in").write_text(
+                    relaxed_structure, encoding="utf-8"
+                )
             parsed = self._parse_remote_step(query, step, package)
             results.append(parsed)
 
