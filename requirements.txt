@@ -3,9 +3,9 @@ torch
 transformers
 openai
 mpcontribs-client
-pymatgen==2026.5.4
-emmet-core==0.87.1
-mp-api==0.46.4
+pymatgen==2025.10.7
+emmet-core==0.85.1
+mp-api==0.45.13
 fastapi
 uvicorn
 PyYAML
