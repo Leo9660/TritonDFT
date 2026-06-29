@@ -27,10 +27,15 @@ from sqlalchemy import text
 from db import SessionLocal, Job, init_db
 from credits import count_tokens, reconcile
 from artifacts import extract_result
-from DFTAgent import DFTAgent
+from DFTAgent import DFTAgent, JobCancelled
 
 WORKER_ID = os.environ.get("HOSTNAME", socket.gethostname())
 JOB_TIMEOUT_S = int(os.environ.get("JOB_TIMEOUT_S", "1800"))   # 30 min
+# Assistant mode: how long a step's script waits for human review before the
+# worker auto-continues with the generated script as-is. The execution-timeout
+# clock is paused while waiting, so this never eats into JOB_TIMEOUT_S.
+APPROVAL_TIMEOUT_S = int(os.environ.get("APPROVAL_TIMEOUT_S", "600"))   # 10 min
+APPROVAL_POLL_S = 2.0
 OUTPUT_CAP = 80_000
 FLUSH_INTERVAL_S = 1.5
 POLL_INTERVAL_S = 2.0
@@ -56,7 +61,7 @@ def log(msg: str):
 
 def claim_job():
     """Atomically claim one queued job.
-    Returns (id, user_id, usage_log_id, query, model, script_only) or None."""
+    Returns (id, user_id, usage_log_id, query, model, script_only, mode) or None."""
     db = SessionLocal()
     try:
         row = db.execute(text("""
@@ -74,7 +79,50 @@ def claim_job():
             return None
         job = db.query(Job).filter(Job.id == row[0]).first()
         return (job.id, job.user_id, job.usage_log_id, job.query,
-                job.model, bool(job.script_only))
+                job.model, bool(job.script_only), job.mode or "auto")
+    finally:
+        db.close()
+
+
+# ───── Approval-gate DB helpers (assistant mode) ─────
+
+def set_awaiting(job_id, pending: dict):
+    """Publish the pending step for review and flip the job to awaiting_approval."""
+    db = SessionLocal()
+    try:
+        db.query(Job).filter(Job.id == job_id).update(
+            {"status": "awaiting_approval", "pending_step": pending, "step_action": None})
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def read_gate(job_id):
+    """Return (status, step_action) for the gate poll loop."""
+    db = SessionLocal()
+    try:
+        j = db.query(Job).filter(Job.id == job_id).first()
+        if j is None:
+            return (None, None)
+        return (j.status, j.step_action)
+    finally:
+        db.close()
+
+
+def resume_after_gate(job_id, cancelled: bool):
+    """Clear the pending-step fields once the gate returns. Keep a cancelled job
+    cancelled; otherwise flip back to running so the agent can proceed."""
+    db = SessionLocal()
+    try:
+        fields = {"pending_step": None, "step_action": None}
+        if not cancelled:
+            fields["status"] = "running"
+        db.query(Job).filter(Job.id == job_id).update(fields)
+        db.commit()
+    except Exception:
+        db.rollback()
     finally:
         db.close()
 
@@ -84,7 +132,14 @@ def reap_stale():
     db = SessionLocal()
     try:
         cutoff = datetime.utcnow() - timedelta(seconds=JOB_TIMEOUT_S + 120)
-        stale = db.query(Job).filter(Job.status == "running", Job.started_at < cutoff).all()
+        # Assistant-mode jobs legitimately pause for human review, so their
+        # wall-clock (started_at → now) can far exceed JOB_TIMEOUT_S without the
+        # worker being dead. Excluding them avoids falsely reaping a resumed job.
+        stale = db.query(Job).filter(
+            Job.status == "running",
+            Job.started_at < cutoff,
+            (Job.mode == None) | (Job.mode != "assistant"),  # noqa: E711
+        ).all()
         for job in stale:
             job.status = "timeout"
             job.error = "Worker did not finish in time (it likely crashed)."
@@ -161,7 +216,7 @@ def finalize(job_id, user_id, usage_log_id, status, output, error,
 
 # ───── Job execution ─────
 
-def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only=False):
+def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only=False, mode="auto"):
     # Reconfigure the (reused) agent for THIS job: model, script-only mode, and
     # a fresh token tally so billing reflects only this job's usage.
     if model:
@@ -175,10 +230,58 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
         agent.generator.reset_token_counters()
     except Exception:
         pass
-    log(f"job {job_id}: model={agent.model} script_only={agent.script_only}")
+    log(f"job {job_id}: model={agent.model} script_only={agent.script_only} mode={mode}")
 
     buf = []
     buf_lock = threading.Lock()
+
+    # Execution-timeout clock, shared with the approval gate so human-wait time
+    # never counts against JOB_TIMEOUT_S.
+    state = {"deadline": time.time() + JOB_TIMEOUT_S, "paused": False}
+
+    def emit(msg: str):
+        with buf_lock:
+            buf.append(msg)
+
+    def approval_gate(step_meta, scripts):
+        """Blocks the agent thread: publish the step, wait for the user's action
+        (or auto-continue after APPROVAL_TIMEOUT_S). Returns the decision dict."""
+        idx = step_meta.get("step_index")
+        total = step_meta.get("total_steps")
+        label = f"step {idx}" + (f"/{total}" if total else "")
+        emit(f"\n\n⏸️ Assistant mode — review the script for {label} "
+             f"({step_meta.get('tool', '')}). Approve, edit, or suggest a change. "
+             f"Auto-continues in {APPROVAL_TIMEOUT_S // 60} min.\n")
+        set_awaiting(job_id, {**step_meta, "scripts": scripts})
+        state["paused"] = True
+        wait_start = time.time()
+        decision = {"action": "approve"}
+        try:
+            while True:
+                time.sleep(APPROVAL_POLL_S)
+                status, action = read_gate(job_id)
+                if status is None or status == "cancelled":
+                    decision = {"action": "cancel"}
+                    break
+                if action:
+                    decision = action
+                    break
+                if time.time() - wait_start > APPROVAL_TIMEOUT_S:
+                    emit("\n▶️ No response — continuing with the generated script.\n")
+                    decision = {"action": "approve"}
+                    break
+        finally:
+            resume_after_gate(job_id, cancelled=(decision.get("action") == "cancel"))
+            state["deadline"] += (time.time() - wait_start)
+            state["paused"] = False
+        act = decision.get("action")
+        if act == "suggest":
+            emit("\n▶️ Revising the script per your suggestion…\n")
+        elif act == "approve" and decision.get("scripts"):
+            emit("\n▶️ Running your edited script.\n")
+        return decision
+
+    gate = approval_gate if mode == "assistant" else None
 
     class Catcher:
         def write(self, t):
@@ -203,7 +306,12 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
 
     def agent_thread():
         try:
-            agent.run(query)
+            agent.run(query, approval_gate=gate)
+        except JobCancelled:
+            # Clean stop — the user cancelled at an approval gate. The DB status
+            # is already 'cancelled'; nothing to report as an error.
+            with buf_lock:
+                buf.append("\n\n> ⏹️ Cancelled at your request.\n")
         except Exception as e:
             crashed["err"] = str(e)
             with buf_lock:
@@ -219,13 +327,14 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
     t = threading.Thread(target=agent_thread, daemon=True)
     t.start()
 
-    deadline = time.time() + JOB_TIMEOUT_S
     status = "done"
     # try/finally guarantees stdout is restored even if the poll loop raises —
     # otherwise a hijacked stdout would leak into the next job on this worker.
     try:
         while not done.wait(timeout=FLUSH_INTERVAL_S):
-            if time.time() > deadline:
+            # Don't enforce the execution timeout while paused for human review;
+            # the gate extends state["deadline"] by the waited time on resume.
+            if not state["paused"] and time.time() > state["deadline"]:
                 status = "timeout"
                 with buf_lock:
                     buf.append(f"\n\n> ⏱️ Request timed out after {JOB_TIMEOUT_S // 60} minutes.\n")
@@ -299,7 +408,13 @@ def main():
         # MPI ranks per QE run — keep ≤ the container CPU limit (8) so we don't
         # oversubscribe cores.
         parallel_np=int(os.environ.get("JOB_NP", "8")),
-        qe_timeout_seconds=540,
+        # Per-pw.x cap, kept just under the JOB_TIMEOUT_S wall (300s) so a single
+        # runaway step is killed cleanly by the executor (agent finalizes, pod
+        # survives) instead of tripping the job-level wall that hard-restarts the pod.
+        qe_timeout_seconds=270,
+        # MP gives un-relaxed initial structures, so the planner always prepends
+        # a vc-relax step. Set FORCE_VC_RELAX=0 to let the planner decide instead.
+        force_vc_relax=os.environ.get("FORCE_VC_RELAX", "1").lower() not in ("0", "false", "no"),
     )
     log("agent loaded, polling for jobs")
 
@@ -315,10 +430,10 @@ def main():
             time.sleep(POLL_INTERVAL_S)
             continue
 
-        job_id, user_id, usage_log_id, query, model, script_only = claimed
+        job_id, user_id, usage_log_id, query, model, script_only, mode = claimed
         log(f"claimed job {job_id}")
         try:
-            run_job(agent, job_id, user_id, usage_log_id, query, model, script_only)
+            run_job(agent, job_id, user_id, usage_log_id, query, model, script_only, mode)
         except Exception as e:
             log(f"run_job crashed for {job_id}: {e}")
             try:
