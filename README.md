@@ -108,10 +108,13 @@ remote working directory. It creates or reuses an SSH config entry, writes the
 cluster defaults to `.env.cluster`, then asks you to add `OPENAI_API_KEY` and
 `MP_API_KEY` there before continuing.
 
-Edit `example_slurm_job_file.txt` with your cluster's normal submission header
-and module commands. TritonDFT uses that file as the safe site-specific base and
-only replaces the walltime, Slurm task count, executable, input, output, and QE
-launch command for each generated job.
+Each user should keep their own Slurm example script at
+`~/.tritondft/example_slurm_job_file.txt` and edit it with their cluster's
+normal account, partition, submission header, and module commands. TritonDFT
+uses that file as the safe site-specific base and only replaces the walltime,
+Slurm task count, executable, input, output, and QE launch command for each
+generated job. On first run, if the user-local template is missing, TritonDFT
+copies the shared `example_slurm_job_file.txt` there as a starting point.
 
 The `.env.cluster` file is ignored by Git because it can contain API keys. The
 `CLUSTER_AGENT_SSH_TARGET` value can be an alias from `~/.ssh/config` or

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+import os
 import sys
 import types
 
@@ -17,6 +18,7 @@ from cluster_agent import (
     RemoteClusterDFTAgent,
     _add_relaxed_structure_placeholder,
     _extract_relaxed_structure,
+    _ensure_env_defaults,
     _input_validation_errors,
     _insert_relaxed_structure,
     _plan_text,
@@ -60,6 +62,35 @@ End final coordinates
 
 
 class PlaceholderTests(unittest.TestCase):
+    def test_default_slurm_template_is_user_local_and_created(self):
+        old_home = os.environ.get("HOME")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["HOME"] = tmp
+                env_path = Path(tmp) / ".env.cluster"
+                env_path.write_text(
+                    "OPENAI_API_KEY=x\n"
+                    "MP_API_KEY=y\n"
+                    "TRITONDFT_SLURM_TEMPLATE=example_slurm_job_file.txt\n",
+                    encoding="utf-8",
+                )
+
+                _ensure_env_defaults(str(env_path))
+
+                env_text = env_path.read_text(encoding="utf-8")
+                self.assertIn(
+                    "TRITONDFT_SLURM_TEMPLATE=~/.tritondft/example_slurm_job_file.txt",
+                    env_text,
+                )
+                user_template = Path(tmp) / ".tritondft" / "example_slurm_job_file.txt"
+                self.assertTrue(user_template.exists())
+                self.assertIn("#SBATCH", user_template.read_text(encoding="utf-8"))
+        finally:
+            if old_home is not None:
+                os.environ["HOME"] = old_home
+            else:
+                os.environ.pop("HOME", None)
+
     def test_empty_model_responses_retry_without_becoming_parser_failures(self):
         class EventuallyReturnsInput:
             def __init__(self):

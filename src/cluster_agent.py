@@ -23,6 +23,9 @@ from utils import (
 )
 
 
+DEFAULT_USER_SLURM_TEMPLATE = "~/.tritondft/example_slurm_job_file.txt"
+
+
 WELCOME_BANNER = r"""
 --------------------------------------------------------------------------------
 
@@ -114,10 +117,51 @@ def _env_missing_api_keys(path: str) -> bool:
 def _ensure_env_defaults(path: str) -> None:
     data = _read_env_file(path)
     defaults: Dict[str, str] = {}
-    if "TRITONDFT_SLURM_TEMPLATE" not in data:
-        defaults["TRITONDFT_SLURM_TEMPLATE"] = "example_slurm_job_file.txt"
+    template_value = data.get("TRITONDFT_SLURM_TEMPLATE", "").strip()
+    if not template_value or template_value == "example_slurm_job_file.txt":
+        defaults["TRITONDFT_SLURM_TEMPLATE"] = DEFAULT_USER_SLURM_TEMPLATE
     if defaults:
         _write_env_file(path, defaults)
+    _ensure_user_slurm_template(_read_env_file(path).get("TRITONDFT_SLURM_TEMPLATE", ""))
+
+
+def _ensure_user_slurm_template(template_path: str) -> None:
+    """Create a per-user Slurm example template when the default path is used."""
+    if not template_path:
+        return
+    destination = Path(template_path).expanduser()
+    if destination.exists():
+        return
+    if destination != Path(DEFAULT_USER_SLURM_TEMPLATE).expanduser():
+        return
+
+    shared_template = Path(__file__).resolve().parent.parent / "example_slurm_job_file.txt"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if shared_template.exists():
+        shutil.copy2(shared_template, destination)
+    else:
+        destination.write_text(
+            "#!/bin/bash\n"
+            "# Edit this file for your cluster account, partition, and modules.\n"
+            "#SBATCH --partition=shared\n"
+            "#SBATCH --nodes=1\n"
+            "#SBATCH --tasks-per-node=1\n"
+            "#SBATCH -t 00:10:00\n"
+            "#SBATCH -o qe.out\n"
+            "#SBATCH -e qe.err\n"
+            "#SBATCH --export=ALL\n"
+            "#SBATCH --job-name=tritondft-qe\n\n"
+            "module load openmpi\n"
+            "module load quantum-espresso\n\n"
+            "# TritonDFT generated execution block\n"
+            "exe=pw.x\n"
+            "INPUT=input.in\n"
+            "OUTPUT=output.out\n"
+            "mpirun -np 1 $exe -in $INPUT > $OUTPUT\n",
+            encoding="utf-8",
+        )
+    destination.chmod(0o600)
+    print(f"[cluster-agent] Created user Slurm template: {destination}")
 
 
 def _run_interactive(command: str, cwd: Optional[str] = None, verbose: bool = True) -> None:
@@ -271,7 +315,10 @@ def _run_super_user_setup(env_file: str) -> None:
             "CLUSTER_AGENT_BACKEND": os.environ.get("CLUSTER_AGENT_BACKEND", "openai"),
             "CLUSTER_AGENT_WORK_DIR": os.environ.get("CLUSTER_AGENT_WORK_DIR", "tmp"),
             "CLUSTER_AGENT_POLL_SECONDS": os.environ.get("CLUSTER_AGENT_POLL_SECONDS", "30"),
-            "TRITONDFT_SLURM_TEMPLATE": os.environ.get("TRITONDFT_SLURM_TEMPLATE", "example_slurm_job_file.txt"),
+            "TRITONDFT_SLURM_TEMPLATE": os.environ.get(
+                "TRITONDFT_SLURM_TEMPLATE",
+                DEFAULT_USER_SLURM_TEMPLATE,
+            ),
             "CLUSTER_AGENT_REMOTE_QE_BIN_DIR": os.environ.get("CLUSTER_AGENT_REMOTE_QE_BIN_DIR", ""),
             "CLUSTER_AGENT_NO_QUERY_INFO": os.environ.get("CLUSTER_AGENT_NO_QUERY_INFO", "true"),
         },
