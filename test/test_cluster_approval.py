@@ -17,6 +17,7 @@ from cluster_agent import (
     ClusterJob,
     RemoteClusterDFTAgent,
     _add_relaxed_structure_placeholder,
+    _env_missing_cluster_setup,
     _extract_relaxed_structure,
     _ensure_env_defaults,
     _input_validation_errors,
@@ -62,6 +63,45 @@ End final coordinates
 
 
 class PlaceholderTests(unittest.TestCase):
+    def test_missing_per_user_ssh_alias_triggers_cluster_setup(self):
+        old_home = os.environ.get("HOME")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["HOME"] = tmp
+                env_path = Path(tmp) / ".env.cluster"
+                env_path.write_text(
+                    "CLUSTER_AGENT_SSH_TARGET=expanse\n"
+                    "CLUSTER_AGENT_REMOTE_ROOT=/scratch/user/tritondft\n",
+                    encoding="utf-8",
+                )
+
+                self.assertTrue(_env_missing_cluster_setup(str(env_path)))
+
+                ssh_dir = Path(tmp) / ".ssh"
+                ssh_dir.mkdir()
+                (ssh_dir / "config").write_text(
+                    "Host expanse\n"
+                    "  HostName login.expanse.sdsc.edu\n"
+                    "  User user\n",
+                    encoding="utf-8",
+                )
+                self.assertFalse(_env_missing_cluster_setup(str(env_path)))
+        finally:
+            if old_home is not None:
+                os.environ["HOME"] = old_home
+            else:
+                os.environ.pop("HOME", None)
+
+    def test_direct_ssh_target_does_not_require_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env.cluster"
+            env_path.write_text(
+                "CLUSTER_AGENT_SSH_TARGET=user@login.expanse.sdsc.edu\n"
+                "CLUSTER_AGENT_REMOTE_ROOT=/scratch/user/tritondft\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(_env_missing_cluster_setup(str(env_path)))
+
     def test_default_slurm_template_is_user_local_and_created(self):
         old_home = os.environ.get("HOME")
         try:

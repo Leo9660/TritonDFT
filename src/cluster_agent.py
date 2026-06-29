@@ -106,7 +106,17 @@ def _write_env_file(path: str, values: Dict[str, str]) -> None:
 
 def _env_missing_cluster_setup(path: str) -> bool:
     data = _read_env_file(path)
-    return not data.get("CLUSTER_AGENT_SSH_TARGET") or not data.get("CLUSTER_AGENT_REMOTE_ROOT")
+    ssh_target = data.get("CLUSTER_AGENT_SSH_TARGET", "").strip()
+    remote_root = data.get("CLUSTER_AGENT_REMOTE_ROOT", "").strip()
+    if not ssh_target or not remote_root:
+        return True
+    if _ssh_target_needs_user_config(ssh_target):
+        print(
+            f"[cluster-agent] SSH target '{ssh_target}' is not configured for "
+            f"this Linux user ({Path.home()})."
+        )
+        return True
+    return False
 
 
 def _env_missing_api_keys(path: str) -> bool:
@@ -233,6 +243,16 @@ def _ssh_host_alias_exists(alias: str) -> bool:
     return any(host.get("host") == alias for host in _parse_ssh_config_hosts())
 
 
+def _ssh_target_needs_user_config(target: str) -> bool:
+    """Return True when an env SSH target is an alias missing from this user's config."""
+    target = target.strip()
+    if not target:
+        return True
+    if "@" in target or "." in target or ":" in target:
+        return False
+    return not _ssh_host_alias_exists(target)
+
+
 def _default_alias_for(hostname: str) -> str:
     parts = [p for p in hostname.split(".") if p]
     if len(parts) > 1 and parts[0].lower() in {"login", "logon", "ssh"}:
@@ -240,13 +260,13 @@ def _default_alias_for(hostname: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "-", parts[0]).strip("-") if parts else "cluster"
 
 
-def _ensure_ssh_config_host(username: str, hostname: str) -> str:
+def _ensure_ssh_config_host(username: str, hostname: str, preferred_alias: str = "") -> str:
     existing = _find_matching_ssh_host(username, hostname)
     if existing:
         print(f"Found existing SSH config entry: Host {existing}")
         return existing
 
-    alias = _default_alias_for(hostname)
+    alias = preferred_alias or _default_alias_for(hostname)
     if _ssh_host_alias_exists(alias):
         alias = input(f"SSH alias '{alias}' already exists. Enter a new alias: ").strip() or alias
 
@@ -282,28 +302,48 @@ Host {alias}
     return alias
 
 
+def _prompt_with_default(label: str, default: str = "") -> str:
+    if default:
+        entered = input(f"{label} [{default}]: ").strip()
+        return entered or default
+    return input(f"{label}: ").strip()
+
+
 def _run_super_user_setup(env_file: str) -> None:
-    print("To begin, you need to provide below information\n")
+    existing = _read_env_file(env_file)
+    current_target = existing.get("CLUSTER_AGENT_SSH_TARGET", "").strip()
+    current_remote_root = existing.get("CLUSTER_AGENT_REMOTE_ROOT", "").strip()
+    default_alias = current_target if current_target and "@" not in current_target and "." not in current_target else ""
 
-    print("Please provide your cluster address:")
-    hostname = input("> ").strip()
-    print("and it will collect the address\n")
+    print("TritonDFT needs a per-user remote cluster setup for this Linux account.\n")
+    print("This will create/update:")
+    print("  - ~/.tritondft/.env.cluster")
+    print("  - ~/.tritondft/example_slurm_job_file.txt")
+    print("  - ~/.ssh/config, if you choose to create an SSH alias\n")
 
-    print("Please provide your user id:")
-    username = input("> ").strip()
-    print("and it will collect the id\n")
+    print("\nPlease provide the remote cluster connection details.")
+    alias = _prompt_with_default(
+        "Cluster nickname / SSH alias, e.g. expanse",
+        default_alias,
+    )
+    hostname = _prompt_with_default(
+        "Cluster login hostname, e.g. login.expanse.sdsc.edu",
+        "",
+    )
+    username = _prompt_with_default("Your user id on that cluster", os.environ.get("USER", ""))
 
-    print("password:")
+    print("\nPassword/OTP:")
     print("  TritonDFT does not store your password. SSH will ask for your password/OTP when the connection opens.")
 
-    print("\nplease provide the working directory path in your cluster:")
-    remote_root = input("> ").strip().rstrip("/")
-    print("and it will collect the path\n")
+    remote_root = _prompt_with_default(
+        "\nRemote working directory on the cluster, e.g. /scratch/$USER/tritondft_runs",
+        current_remote_root,
+    ).rstrip("/")
 
     if not username or not hostname or not remote_root:
-        raise ValueError("User name, cluster address, and cluster working directory are required.")
+        raise ValueError("Cluster nickname, user id, login hostname, and remote working directory are required.")
 
-    ssh_target = _ensure_ssh_config_host(username=username, hostname=hostname)
+    ssh_target = _ensure_ssh_config_host(username=username, hostname=hostname, preferred_alias=alias)
     _write_env_file(
         env_file,
         {
@@ -323,7 +363,9 @@ def _run_super_user_setup(env_file: str) -> None:
             "CLUSTER_AGENT_NO_QUERY_INFO": os.environ.get("CLUSTER_AGENT_NO_QUERY_INFO", "true"),
         },
     )
+    _ensure_env_defaults(env_file)
     print(f"\nSetup complete. Cluster settings were written to {env_file}.")
+    print(f"Per-user Slurm template: {Path(DEFAULT_USER_SLURM_TEMPLATE).expanduser()}")
 
 
 @dataclass
