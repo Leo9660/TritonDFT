@@ -57,6 +57,16 @@ COPY requirements.txt /workspace/requirements.txt
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
     -r /workspace/requirements.txt
 
+# ---------- Pre-cache tiktoken BPE files (offline workers) ----------
+# tiktoken lazily downloads encodings from openaipublic.blob.core.windows.net on
+# first use. NRP workers have flaky/absent egress to that host, which previously
+# crashed credits.py at import. Bake both encodings into the image now (build
+# host has network) so runtime needs none. credits.py uses gpt-4o (o200k_base)
+# and falls back to cl100k_base.
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken_cache
+RUN mkdir -p "$TIKTOKEN_CACHE_DIR" \
+ && python -c "import tiktoken; tiktoken.encoding_for_model('gpt-4o'); tiktoken.get_encoding('cl100k_base')"
+
 # ---------- Build Quantum ESPRESSO (CPU) ----------
 ARG QE_VERSION=qe-7.3.1
 ARG QE_BUILD_JOBS=8
