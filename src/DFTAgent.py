@@ -20,6 +20,13 @@ validate_pseudos_exist
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
 
+
+class JobCancelled(Exception):
+    """Raised inside the agent when an approval gate reports the job was
+    cancelled by the user. The worker treats this as a clean stop, not a crash."""
+    pass
+
+
 class DFTAgent:
     """
     DFTAgent: Minimal framework
@@ -56,6 +63,7 @@ class DFTAgent:
         script_only: bool = False,
         mpid_output_file: Optional[str] = None,
         qe_timeout_seconds: int = 600,
+        force_vc_relax: bool = True,
     ):
         self.config_name = config_name or "config.yaml"
         self.config = Config.load(self.config_name)
@@ -112,6 +120,9 @@ class DFTAgent:
         self.output_log = output_log
         self.output_log_file = output_log_file
         self.script_only = script_only
+        # Default ON: MP gives initial (un-relaxed) structures, so the planner
+        # always prepends a pw_vc_relax step. Turn off to let the planner decide.
+        self.force_vc_relax = force_vc_relax
         self.mpid_output_file = str(mpid_output_file) if mpid_output_file else None
         self.system_num = 0
 
@@ -259,7 +270,8 @@ class DFTAgent:
         if self.verbose:
             print(f"[plan] Generating plan for query: {query}")
 
-        messages = get_prompt(prompt_type="planner", question=query, tool=self.dft_tool)
+        messages = get_prompt(prompt_type="planner", question=query, tool=self.dft_tool,
+                              force_vc_relax=self.force_vc_relax)
         try:
             prompt_text = messages[0]["content"]
             raw_out = self.generator(prompt_text, max_new_tokens=self.max_new_tokens, return_full_text=False)
@@ -276,7 +288,7 @@ class DFTAgent:
 
         return plan_dict
 
-    def solve_sub_problem(self, subproblem: Dict[str, Any], problem_id: int = 0, query: str = "", total_memory: str = "", material_info: Dict = []) -> Any:
+    def solve_sub_problem(self, subproblem: Dict[str, Any], problem_id: int = 0, query: str = "", total_memory: str = "", material_info: Dict = [], approval_gate=None) -> Any:
         if self.verbose:
             print(f"[solve_sub_problem] Solving subproblem: {subproblem['problem']}")
             print(f"[solve_sub_problem] Using tool: {subproblem['tool']}")
@@ -408,6 +420,54 @@ class DFTAgent:
                     fn_spec.eval_input(input_path)
 
             acc_script_gen_time += (time.perf_counter() - t_script_start)
+
+            # --- Human-in-the-loop approval gate ---
+            # In assistant mode the worker passes a gate callback. We surface the
+            # freshly generated (and patched) input file(s) and block until the
+            # user approves / edits / suggests a revision / cancels.
+            if approval_gate is not None:
+                current_scripts = []
+                for p in input_paths:
+                    try:
+                        with open(p, "r") as f:
+                            current_scripts.append({"filename": os.path.basename(p), "content": f.read()})
+                    except OSError:
+                        pass
+                decision = approval_gate({
+                    "step_index": problem_id,
+                    "step_id": subproblem_id,
+                    "total_steps": getattr(self, "_total_steps", None),
+                    "problem": subproblem.get("problem", ""),
+                    "tool": subproblem.get("tool", ""),
+                    "attempt": loop_count,
+                }, current_scripts) or {}
+                action = decision.get("action", "approve")
+
+                if action == "cancel":
+                    raise JobCancelled()
+
+                if action == "suggest":
+                    # Regenerate the script incorporating the user's feedback. The
+                    # next loop uses the "script_fixed" prompt (loop_count > 1),
+                    # which already folds in `error_code`.
+                    suggestion = str(decision.get("suggestion", "")).strip()
+                    error_code += f"\n[User feedback] Revise the input as requested: {suggestion}\n\n"
+                    continue
+
+                # approve (optionally with user-edited scripts) → run it.
+                edited = decision.get("scripts")
+                if edited:
+                    by_name = {os.path.basename(p): p for p in input_paths}
+                    for item in edited:
+                        path = by_name.get(item.get("filename"))
+                        if not path:
+                            continue
+                        with open(path, "w") as f:
+                            f.write(str(item.get("content", "")).rstrip() + "\n\n")
+                    # Re-apply path/prefix patching so QE still finds pseudos & outdir.
+                    for i, path in enumerate(input_paths):
+                        exec_id = f"{problem_id}_{loop_count}_{i}"
+                        patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir, new_prefix=f"subproblem_{exec_id}", pp_dir_clean=True)
 
             if self.script_only:
                 return {
@@ -599,6 +659,7 @@ class DFTAgent:
         task_type: str = "",
         material_name: str = "",
         work_dir: Optional[str] = None,
+        approval_gate=None,
     ) -> Any:
         
         # --- Global Timer Start ---
@@ -679,6 +740,7 @@ class DFTAgent:
         
         last_sub_problem_res = None
         conclusions = []   # per-subproblem natural-language judgments → analysis.json
+        self._total_steps = len(subproblems)   # surfaced to the approval gate
 
         for i, step in enumerate(subproblems):
             if self.verbose:
@@ -688,11 +750,12 @@ class DFTAgent:
             ot_before_sub = getattr(self.generator, "total_output_tokens", 0)
             
             sub_problem_res = self.solve_sub_problem(
-                step, 
-                problem_id=i+1, 
-                query=query, 
+                step,
+                problem_id=i+1,
+                query=query,
                 total_memory=total_memory,
-                material_info=material_info
+                material_info=material_info,
+                approval_gate=approval_gate,
             )
             
             # Token Tracking
@@ -728,12 +791,18 @@ class DFTAgent:
             total_dft_time += t_dft
 
             if self.script_only:
-                # Stop here if script only — no DFT executed.
-                self._write_analysis(
-                    "Script-only run: generated the Quantum ESPRESSO input file(s) "
-                    "for this query without executing them on CPU. Download the inputs "
-                    "below; an admin can run them to produce results.", query)
-                return sub_problem_res
+                if approval_gate is None:
+                    # Auto mode: preserve the original behavior — script-only stops
+                    # after the first step's inputs. (No regression for the many
+                    # non-privileged users who are forced script-only.)
+                    self._write_analysis(
+                        "Script-only run: generated the Quantum ESPRESSO input file(s) "
+                        "for this query without executing them on CPU. Download the inputs "
+                        "below; an admin can run them to produce results.", query)
+                    return sub_problem_res
+                # Assistant mode: walk every step so the user can review/edit each
+                # step's generated input(s). No DFT executed; nothing to carry forward.
+                continue
 
             # Update Memory
             total_memory += f" Subproblem {i+1}:\n System Results:\n {sub_problem_res.get('result_json','')} \n"
@@ -791,5 +860,11 @@ class DFTAgent:
                     f"{max_rel_error},{all_exact_match}\n"
                 )
 
-        self._write_analysis("\n\n".join(conclusions), query)
+        if self.script_only:
+            self._write_analysis(
+                "Script-only run: generated the Quantum ESPRESSO input file(s) for "
+                "every planned step without executing them on CPU. Download the inputs "
+                "below; an admin can run them to produce results.", query)
+        else:
+            self._write_analysis("\n\n".join(conclusions), query)
         return last_sub_problem_res
