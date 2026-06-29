@@ -7,3 +7,9 @@ k8s/secret.yaml
 k8s/postgres.yaml
 build.log
 .env
+
+# Secret-bearing local files — NEVER commit these.
+env_setup.sh
+githubtoken.txt
+get-mp-key.txt
+*.git-credentials
