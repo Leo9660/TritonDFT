@@ -103,10 +103,13 @@ run directory.
 bash scripts/run_cluster_agent.sh
 ```
 
-On the first run, TritonDFT asks for your cluster username, login address, and
-remote working directory. It creates or reuses an SSH config entry, writes the
-cluster defaults to `.env.cluster`, then asks you to add `OPENAI_API_KEY` and
-`MP_API_KEY` there before continuing.
+On the first run for each Linux user, TritonDFT checks that the user's own
+cluster setup exists. If `~/.tritondft/.env.cluster` is missing, incomplete, or
+points to an SSH alias that is not present in that user's `~/.ssh/config`,
+TritonDFT asks for the cluster nickname, login hostname, cluster user id, and
+remote working directory. It then creates/reuses that user's SSH config entry,
+writes the cluster defaults to `~/.tritondft/.env.cluster`, and asks the user to
+add `OPENAI_API_KEY` and `MP_API_KEY` before continuing.
 
 Each user should keep their own Slurm example script at
 `~/.tritondft/example_slurm_job_file.txt` and edit it with their cluster's
