@@ -1,0 +1,128 @@
+# =============================================================================
+# DEPLOY v33  —  TritonDFT  (namespace: datahub-llm)
+# =============================================================================
+# What changed in v33:
+#   FIX "Invalid MPID Format" crash on Materials Project queries.
+#   Root cause: the live MP API now returns alias material_ids like
+#   "mp-aaaaaaft" (letter suffix). They match NEITHER emmet-core's MPID regex
+#   NOR the ULID regex, so EVERY emmet-core version rejects them and the whole
+#   query dies. Bumping/downgrading emmet-core/mp-api/pymatgen does NOT fix it.
+#   Fix lives in src/tool/tool_mp.py: MPRester(use_document_model=False) ->
+#   raw dicts, bypassing validation, plus an _as_structure() compatibility
+#   shim (nested structures decode to Structure on mp-api 0.45.x but stay dicts
+#   on 0.46.x — that is the real "prod != sandbox" trap).
+#   Verified end-to-end on:
+#     "Show me the band structure of silicon, diamond cubic, using vc-relax with LDA"
+#     -> material_id mp-aaaaaaft, Fd-3m (227), a=3.849 A, NO crash,
+#     identical result on emmet-core 0.85.1 AND 0.86.4.
+#
+# Image tags are IMMUTABLE: code changes REQUIRE a new tag. Both the API
+# (tritondft) and the worker (tritondft-worker) deployments use the SAME image
+# — bump BOTH. k8s/deployment.yaml and k8s/worker.yaml already pin :v33.
+# =============================================================================
+
+
+# ---- 1. Build & push the v33 image -----------------------------------------
+docker build -t docker.io/yil384/tritondft:v33 .
+docker push docker.io/yil384/tritondft:v33
+
+
+# ---- 2. Roll both deployments to v33 ---------------------------------------
+# Either apply the manifests (already pinned to :v33) ...
+kubectl -n datahub-llm apply -f k8s/deployment.yaml -f k8s/worker.yaml
+# ... or set the image directly:
+# kubectl -n datahub-llm set image deployment/tritondft        tritondft=docker.io/yil384/tritondft:v33
+# kubectl -n datahub-llm set image deployment/tritondft-worker worker=docker.io/yil384/tritondft:v33
+
+
+# ---- 3. Wait for the rollout -----------------------------------------------
+kubectl -n datahub-llm rollout status deployment/tritondft-worker
+kubectl -n datahub-llm rollout status deployment/tritondft
+
+# Confirm every pod is actually on v33 (immutable tag means old nodes won't
+# repull a reused tag — a fresh tag like v33 always pulls):
+kubectl -n datahub-llm get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}' | sort -u
+# Expect every tritondft* pod -> docker.io/yil384/tritondft:v33
+
+
+# ---- 4. Verify the fix is live ---------------------------------------------
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=50 -f --max-log-requests 8
+# Then submit the test query through the app:
+#   "Show me the band structure of silicon, diamond cubic, using vc-relax with LDA"
+# Expect in the logs:
+#   [info_query] API call snippet received: mpr.materials...search(formula="Si", ...)
+#   [info_query] Retrieved material information: ...
+# And NO "Invalid MPID Format" / "validation error for SummaryDoc".
+
+
+# =============================================================================
+# CONTINGENCY DURING ROLLOUT: a NEW v33 pod can't resolve 'postgres'
+# (folded in from troubleshoot-dns-pod.txt — this is a SEPARATE issue)
+# =============================================================================
+# Symptom: ONE (or a few) pod loops on
+#   claim loop error: failed to resolve host 'postgres'
+#   reap_stale  error: failed to resolve host 'postgres'
+# while the other workers poll normally.
+#
+# This is NOT an app bug and NOT related to the v33 code change. It is a
+# per-node in-cluster DNS failure (CoreDNS / node-local-dns on that node) on
+# NRP. A rollout reschedules pods, so a fresh pod can land on a bad node and
+# show this. Fix = get that pod off the bad node (reschedule), NOT a redeploy.
+#
+# Every command below AUTO-DETECTS the failing pod(s). Copy-paste as-is — there
+# is nothing to fill in by hand.
+
+# ---- C1. Auto-detect which worker pods are wedged on DNS --------------------
+# (scans each worker's recent logs for the postgres resolve error)
+BAD=$(for p in $(kubectl -n datahub-llm get pods -l k8s-app=tritondft-worker -o name); do \
+  kubectl -n datahub-llm logs --tail=20 "$p" 2>/dev/null \
+    | grep -q "failed to resolve host 'postgres'" && echo "${p#pod/}"; \
+done); echo "FAILING PODS: ${BAD:-(none)}"
+
+# ---- C2. Delete the wedged pod(s) (Deployment recreates them elsewhere) -----
+[ -n "$BAD" ] && kubectl -n datahub-llm delete pod $BAD || echo "nothing to delete"
+
+# ---- C3. Watch the replacement(s) come back clean --------------------------
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=50 -f --max-log-requests 8
+# Expect: new pod prints "agent loaded, polling for jobs" and NO
+# "failed to resolve host 'postgres'". (While a new pod is ContainerCreating,
+# `logs -f` may end with "context deadline exceeded" / "closed pipe" — that is
+# the log-follow giving up on a not-yet-started container, not an app error.
+# Just wait and re-tail.)
+
+# ---- C4. If replacements KEEP failing: cordon the bad node(s), then delete --
+# Re-detects the currently-failing pods, cordons whatever node each sits on so
+# the scheduler avoids it, then deletes them to force a reschedule elsewhere.
+BAD=$(for p in $(kubectl -n datahub-llm get pods -l k8s-app=tritondft-worker -o name); do \
+  kubectl -n datahub-llm logs --tail=20 "$p" 2>/dev/null \
+    | grep -q "failed to resolve host 'postgres'" && echo "${p#pod/}"; \
+done); \
+NODES=$(for p in $BAD; do \
+  kubectl -n datahub-llm get pod "$p" -o jsonpath='{.spec.nodeName}{"\n"}'; \
+done | sort -u); \
+for n in $NODES; do echo "cordoning $n"; kubectl cordon "$n"; done; \
+[ -n "$BAD" ] && kubectl -n datahub-llm delete pod $BAD; \
+echo "=== SAVE THIS to uncordon later ==="; \
+echo "kubectl uncordon $NODES"
+# ^ The last line prints a ready-to-run uncordon command listing ONLY the nodes
+#   you just cordoned. Copy it somewhere and run it once NRP fixes those nodes.
+#   (Do NOT blanket-uncordon — other tenants may have cordoned other nodes.)
+
+# ---- C5. Sanity-check cluster DNS / postgres are otherwise healthy ----------
+kubectl -n datahub-llm get svc postgres
+kubectl -n datahub-llm get endpoints postgres                      # must have a ready endpoint
+kubectl -n datahub-llm get pods -l app=postgres -o wide
+# If ALL workers fail to resolve 'postgres' (not just one) OR endpoints is
+# empty, it's cluster-wide DNS or the postgres pod is down — not a single bad
+# node; investigate postgres itself.
+
+
+# =============================================================================
+# OPTIONAL FOLLOW-UP (v34, not in v33): make the worker self-heal off bad nodes
+# =============================================================================
+# Today a DNS-wedged pod spins forever as dead weight until someone deletes it.
+# Durable fix: if the DB is unreachable for > N minutes, have the worker delete
+# its own pod via the k8s API addressed by IP ($KUBERNETES_SERVICE_HOST, needs
+# no DNS) so the Deployment reschedules it — likely onto a healthy node. Needs
+# a small RBAC Role (delete pods) bound to the worker ServiceAccount. Deliberately
+# kept OUT of v33 to keep this deploy clean and low-risk.

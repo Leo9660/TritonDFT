@@ -1,0 +1,42 @@
+# =============================================================================
+# Troubleshoot: one worker pod can't resolve 'postgres' (in-cluster DNS failure)
+# Symptom: ONE pod loops on
+#   claim loop error: failed to resolve host 'postgres'
+#   reap_stale error: failed to resolve host 'postgres'
+# while the other 7 workers poll normally. This is a per-node DNS problem on
+# NRP (CoreDNS / node-local-dns on that node), NOT an app bug. Fix = reschedule.
+# =============================================================================
+
+# ---- 0. (optional) Confirm v31 image is actually live ----------------------
+kubectl -n datahub-llm get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}' | sort -u
+# Expect every worker -> docker.io/yil384/tritondft:v32
+
+# ---- 1. Delete the broken pod (Deployment recreates it elsewhere) ----------
+kubectl -n datahub-llm delete pod tritondft-worker-8587db5d46-gl87w
+
+# ---- 2. Watch it come back clean -------------------------------------------
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=50 -f --max-log-requests 8
+# Expect: new pod prints "agent loaded, polling for jobs" and NO
+# "failed to resolve host 'postgres'" errors.
+
+# ---- 3. If a NEW pod lands on the SAME bad node and fails again -------------
+# Find which node the failing pod is on:
+kubectl -n datahub-llm get pod <failing-pod-name> -o wide      # note the NODE
+# Cordon that node so k8s stops scheduling onto it, then delete the pod again:
+kubectl cordon <node-name>
+kubectl -n datahub-llm delete pod <failing-pod-name>
+# (Uncordon later once NRP fixes DNS on that node:)
+# kubectl uncordon <node-name>
+
+# ---- 4. Sanity-check cluster DNS is otherwise healthy ----------------------
+kubectl -n datahub-llm get svc postgres                        # service exists?
+kubectl -n datahub-llm get endpoints postgres                  # has a ready endpoint?
+
+# ---- 5. After deleting a pod: wait for the replacement to be Running --------
+# A new pod sits in ContainerCreating while it pulls the image / mounts the
+# cephfs PVC. During that window `logs -f` may end with
+#   io: read/write on closed pipe   /   error: context deadline exceeded
+# That is the log-follow giving up on a not-yet-started container, NOT an app
+# error. Just wait, then re-tail.
+kubectl -n datahub-llm get pods -l k8s-app=tritondft-worker    # all 8 -> Running?
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=50 -f --max-log-requests 8

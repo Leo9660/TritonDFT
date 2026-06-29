@@ -1,7 +1,23 @@
 import re, ast
 from typing import Dict, Any, List, Optional
 from mp_api.client import MPRester
+from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+
+def _as_structure(x):
+    """Coerce an MP API payload into a pymatgen Structure.
+
+    With use_document_model=False the API returns raw dicts, and whether a
+    nested structure is monty-decoded to a Structure or left as a plain dict
+    varies across mp-api/emmet-core versions (e.g. 0.45.x decodes, 0.46.x does
+    not). Normalize both so downstream code is version-independent.
+    """
+    if x is None or isinstance(x, Structure):
+        return x
+    if isinstance(x, dict):
+        return Structure.from_dict(x)
+    return x
 
 
 # ---------- Helper extraction functions ----------
@@ -58,7 +74,7 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
 
     # Step 3. Query summary endpoint to get material_ids (avoid `limit=`; truncate locally).
     if not material_ids:
-        with MPRester() as mpr:
+        with MPRester(use_document_model=False) as mpr:
             docs_iter = mpr.materials.summary.search(
                 formula=formula,
                 elements=elements,
@@ -68,22 +84,26 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
                 fields=["material_id", "structure"],
             )
             docs = list(docs_iter)[:limit]
-        material_ids = [d.material_id for d in docs]
-        relaxed_lookup = {d.material_id: d.structure for d in docs}
+        material_ids = [d["material_id"] for d in docs]
+        relaxed_lookup = {d["material_id"]: _as_structure(d["structure"]) for d in docs}
     else:
-        with MPRester() as mpr:
+        with MPRester(use_document_model=False) as mpr:
             docs_iter = mpr.materials.summary.search(
                 material_ids=material_ids,
                 fields=["material_id", "structure"],
             )
             docs = list(docs_iter)
-        relaxed_lookup = {d.material_id: d.structure for d in docs}
+        relaxed_lookup = {d["material_id"]: _as_structure(d["structure"]) for d in docs}
 
     if not material_ids:
         return {}
 
-    # Step 4. Query materials endpoint for initial_structures (attribute access, not subscripting).
-    with MPRester() as mpr:
+    # Step 4. Query materials endpoint for initial_structures.
+    # use_document_model=False -> raw dicts, bypassing emmet-core's MPID
+    # validation. The live MP API now returns alias ids like "mp-aaaaaaft"
+    # that fail the strict MPID regex in every emmet-core version, raising
+    # "Invalid MPID Format" and killing the whole query. Raw dicts avoid it.
+    with MPRester(use_document_model=False) as mpr:
         mats_iter = mpr.materials.search(
             material_ids=material_ids,
             fields=["material_id", "initial_structures"],
@@ -99,7 +119,7 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
         "primitive_structure": [],
     }
 
-    mats_by_id = {m.material_id: m for m in mats}
+    mats_by_id = {m["material_id"]: m for m in mats}
 
     ehull_min = float("inf")
     min_id = None
@@ -109,10 +129,10 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
         mdoc = mats_by_id.get(mid)
 
         # extract initial structures
-        if mdoc and getattr(mdoc, "initial_structures", None):
-            init_list[mid] = [e.to(fmt="cif") for e in mdoc.initial_structures]
+        if mdoc and mdoc.get("initial_structures"):
+            init_list[mid] = [_as_structure(e).to(fmt="cif") for e in mdoc["initial_structures"]]
 
-        with MPRester() as mpr:
+        with MPRester(use_document_model=False) as mpr:
             docs_iter = mpr.materials.summary.search(
                 material_ids=[mid],
                 fields=[
@@ -122,8 +142,8 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
             docs = list(docs_iter)
 
             for i, doc in enumerate(docs):
-                if doc.energy_above_hull < ehull_min:
-                    ehull_min = doc.energy_above_hull
+                if doc["energy_above_hull"] < ehull_min:
+                    ehull_min = doc["energy_above_hull"]
                     min_id = mid
                     min_subid = i
                     # print(f"New min ehull: {ehull_min} for {min_id} (subid {min_subid})")
