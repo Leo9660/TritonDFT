@@ -34,6 +34,13 @@ class CreateJobBody(BaseModel):
     messages: list
     model: Optional[str] = None
     script_only: Optional[bool] = None
+    mode: Optional[str] = None   # "auto" (default) | "assistant" (human-in-the-loop)
+
+
+class StepActionBody(BaseModel):
+    action: str                          # approve | suggest | cancel
+    scripts: Optional[list] = None       # [{filename, content}] — user-edited inputs
+    suggestion: Optional[str] = None     # natural-language revision request
 
 
 def _valid_uuid(s: str) -> bool:
@@ -91,7 +98,8 @@ async def create_job(
     max_active = MAX_ACTIVE_JOBS_PRIVILEGED if privileged_cap else MAX_ACTIVE_JOBS_REGULAR
     active = (
         db.query(Job)
-        .filter(Job.user_id == user.id, Job.status.in_(("queued", "running")))
+        .filter(Job.user_id == user.id,
+                Job.status.in_(("queued", "running", "awaiting_approval")))
         .count()
     )
     if active >= max_active:
@@ -114,6 +122,8 @@ async def create_job(
     if err:
         raise errors.insufficient_credits(err["needed"], err["remaining"])
 
+    mode = "assistant" if (body.mode or "").lower() == "assistant" else "auto"
+
     job = Job(
         user_id=user.id,
         status="queued",
@@ -122,6 +132,7 @@ async def create_job(
         usage_log_id=log.id,
         model=model,
         script_only=script_only,
+        mode=mode,
     )
     db.add(job)
     db.commit()
@@ -134,6 +145,7 @@ async def create_job(
         "credits_remaining": user.credits,
         "model": model,
         "script_only": script_only,
+        "mode": mode,
     }
 
 
@@ -162,6 +174,9 @@ async def get_job(
         "has_artifacts": bool(job.run_dir),
         "model": job.model,
         "script_only": bool(job.script_only),
+        "mode": job.mode or "auto",
+        # The step + generated scripts awaiting the user's review (assistant mode).
+        "pending_step": job.pending_step if job.status == "awaiting_approval" else None,
     }
 
 
@@ -190,6 +205,57 @@ async def cancel_job(
             print(f"[jobs] cancel reconcile failed for {job_id}: {e}")
 
     return {"ok": True, "status": job.status}
+
+
+@router.post("/{job_id}/step-action")
+async def step_action(
+    job_id: str,
+    body: StepActionBody,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Assistant mode: submit the user's decision for a step awaiting review.
+
+    action=approve  → run the generated script (optionally replaced by `scripts`)
+    action=suggest  → ask the LLM to revise the script per `suggestion`
+    action=cancel   → cancel the whole job
+    """
+    if not _valid_uuid(job_id):
+        raise errors.job_not_found()
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if job is None or (job.user_id != user.id and not user.is_admin):
+        raise errors.job_not_found()
+
+    action = (body.action or "").lower()
+    if action not in ("approve", "suggest", "cancel"):
+        return Response(status_code=400)
+
+    if action == "cancel":
+        if job.status in ("queued", "running", "awaiting_approval"):
+            job.status = "cancelled"
+            job.finished_at = datetime.utcnow()
+            db.commit()
+            try:
+                reconcile(db, job.usage_log_id, job.user_id, job.model,
+                          None, count_tokens(job.output or "")[0])
+            except Exception as e:
+                print(f"[jobs] step-action cancel reconcile failed for {job_id}: {e}")
+        return {"ok": True, "status": job.status}
+
+    # approve / suggest are only meaningful while a step is actually awaiting review.
+    if job.status != "awaiting_approval":
+        return Response(status_code=409)
+
+    payload = {"action": action}
+    if action == "approve" and body.scripts:
+        payload["scripts"] = body.scripts
+    if action == "suggest":
+        payload["suggestion"] = body.suggestion or ""
+
+    # The worker's gate polls step_action; it flips the job back to 'running'.
+    job.step_action = payload
+    db.commit()
+    return {"ok": True}
 
 
 # ───── Artifacts ─────
