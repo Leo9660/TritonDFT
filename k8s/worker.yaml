@@ -35,7 +35,7 @@ spec:
                 values: ["true"]
       containers:
       - name: worker
-        image: docker.io/yil384/tritondft:v29
+        image: docker.io/yil384/tritondft:v33
         imagePullPolicy: IfNotPresent
         # tini reaps orphaned mpirun/pw.x children.
         command: ["/usr/bin/tini", "--", "python", "/workspace/src/worker.py"]
@@ -53,8 +53,10 @@ spec:
             secretKeyRef: { name: tritondft-secrets, key: CLAUDE_CODE_OAUTH_TOKEN, optional: true }
         - name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
           value: "1"
+        # Hard wall-clock cap for a single user job. Keep this short so no one
+        # can monopolize a worker slot (only 8 exist) and starve the queue.
         - name: JOB_TIMEOUT_S
-          value: "1800"
+          value: "300"
         # MPI ranks per QE run — must stay ≤ the CPU limit below so we don't
         # oversubscribe cores when many pods land on one node.
         - name: JOB_NP
