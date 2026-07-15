@@ -1,7 +1,5 @@
 import re, ast
 from typing import Dict, Any, List, Optional
-from mp_api.client import MPRester
-from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 
 # ---------- Helper extraction functions ----------
@@ -45,6 +43,15 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
           ...
         }
     """
+    try:
+        from mp_api.client import MPRester
+        from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+    except ImportError as exc:
+        raise ImportError(
+            "Materials Project lookup requires the optional packages `mp_api` "
+            "and `pymatgen`. Install them, or run with CLUSTER_AGENT_NO_QUERY_INFO=true "
+            "to generate inputs without querying Materials Project."
+        ) from exc
 
     # Step 1. Extract material_ids if explicitly given.
     material_ids = _extract_list(snippet, "material_ids")

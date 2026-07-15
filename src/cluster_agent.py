@@ -21,9 +21,12 @@ from utils import (
     package_pseudos_for_remote,
     preprocess_output_list,
 )
+from vasp_agent import RemoteClusterVASPAgent, VASPAgent
 
 
-DEFAULT_USER_SLURM_TEMPLATE = "~/.tritondft/example_slurm_job_file.txt"
+DEFAULT_USER_QE_SLURM_TEMPLATE = "~/.tritondft/example_qe_slurm_job_file.txt"
+DEFAULT_USER_VASP_SLURM_TEMPLATE = "~/.tritondft/example_vasp_slurm_job_file.txt"
+DEFAULT_USER_SLURM_TEMPLATE = DEFAULT_USER_QE_SLURM_TEMPLATE
 
 
 WELCOME_BANNER = r"""
@@ -90,7 +93,12 @@ def _write_env_file(path: str, values: Dict[str, str]) -> None:
         "CLUSTER_AGENT_WORK_DIR",
         "CLUSTER_AGENT_POLL_SECONDS",
         "TRITONDFT_SLURM_TEMPLATE",
+        "TRITONDFT_QE_SLURM_TEMPLATE",
+        "TRITONDFT_VASP_SLURM_TEMPLATE",
         "CLUSTER_AGENT_REMOTE_QE_BIN_DIR",
+        "CLUSTER_AGENT_REMOTE_VASP_COMMAND",
+        "CLUSTER_AGENT_VASP_POTCAR_ROOT",
+        "CLUSTER_AGENT_VASP_FUNCTIONAL",
         "CLUSTER_AGENT_NO_QUERY_INFO",
     ]
     lines = [
@@ -127,22 +135,35 @@ def _env_missing_api_keys(path: str) -> bool:
 def _ensure_env_defaults(path: str) -> None:
     data = _read_env_file(path)
     defaults: Dict[str, str] = {}
-    template_value = data.get("TRITONDFT_SLURM_TEMPLATE", "").strip()
-    if not template_value or template_value == "example_slurm_job_file.txt":
-        defaults["TRITONDFT_SLURM_TEMPLATE"] = DEFAULT_USER_SLURM_TEMPLATE
+    qe_template_value = (
+        data.get("TRITONDFT_QE_SLURM_TEMPLATE", "").strip()
+        or data.get("TRITONDFT_SLURM_TEMPLATE", "").strip()
+    )
+    if not qe_template_value or qe_template_value == "example_slurm_job_file.txt":
+        defaults["TRITONDFT_QE_SLURM_TEMPLATE"] = DEFAULT_USER_QE_SLURM_TEMPLATE
+        defaults["TRITONDFT_SLURM_TEMPLATE"] = DEFAULT_USER_QE_SLURM_TEMPLATE
+    elif not data.get("TRITONDFT_QE_SLURM_TEMPLATE", "").strip():
+        defaults["TRITONDFT_QE_SLURM_TEMPLATE"] = qe_template_value
+    if not data.get("TRITONDFT_VASP_SLURM_TEMPLATE", "").strip():
+        defaults["TRITONDFT_VASP_SLURM_TEMPLATE"] = DEFAULT_USER_VASP_SLURM_TEMPLATE
     if defaults:
         _write_env_file(path, defaults)
-    _ensure_user_slurm_template(_read_env_file(path).get("TRITONDFT_SLURM_TEMPLATE", ""))
+    refreshed = _read_env_file(path)
+    _ensure_user_qe_slurm_template(
+        refreshed.get("TRITONDFT_QE_SLURM_TEMPLATE", "")
+        or refreshed.get("TRITONDFT_SLURM_TEMPLATE", "")
+    )
+    _ensure_user_vasp_slurm_template(refreshed.get("TRITONDFT_VASP_SLURM_TEMPLATE", ""))
 
 
-def _ensure_user_slurm_template(template_path: str) -> None:
-    """Create a per-user Slurm example template when the default path is used."""
+def _ensure_user_qe_slurm_template(template_path: str) -> None:
+    """Create a per-user QE Slurm example template when the default path is used."""
     if not template_path:
         return
     destination = Path(template_path).expanduser()
     if destination.exists():
         return
-    if destination != Path(DEFAULT_USER_SLURM_TEMPLATE).expanduser():
+    if destination != Path(DEFAULT_USER_QE_SLURM_TEMPLATE).expanduser():
         return
 
     shared_template = Path(__file__).resolve().parent.parent / "example_slurm_job_file.txt"
@@ -171,7 +192,44 @@ def _ensure_user_slurm_template(template_path: str) -> None:
             encoding="utf-8",
         )
     destination.chmod(0o600)
-    print(f"[cluster-agent] Created user Slurm template: {destination}")
+    print(f"[cluster-agent] Created user QE Slurm template: {destination}")
+
+
+def _ensure_user_vasp_slurm_template(template_path: str) -> None:
+    """Create a per-user VASP Slurm example template when the default path is used."""
+    if not template_path:
+        return
+    destination = Path(template_path).expanduser()
+    if destination.exists():
+        return
+    if destination != Path(DEFAULT_USER_VASP_SLURM_TEMPLATE).expanduser():
+        return
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        "#!/bin/bash\n"
+        "# Edit this file for your cluster account, partition, and VASP module.\n"
+        "# TritonDFT replaces nodes, tasks-per-node, time, output/error files,\n"
+        "# and the execution block below while preserving your account/module lines.\n"
+        "#SBATCH --partition=shared\n"
+        "#SBATCH --nodes=1\n"
+        "#SBATCH --tasks-per-node=1\n"
+        "#SBATCH -t 01:00:00\n"
+        "#SBATCH -o vasp.slurm.out\n"
+        "#SBATCH -e vasp.slurm.err\n"
+        "#SBATCH --export=ALL\n"
+        "#SBATCH --job-name=tritondft-vasp\n\n"
+        "module load openmpi\n"
+        "module load vasp\n\n"
+        "# TritonDFT generated execution block\n"
+        "exe=vasp_std\n"
+        "INPUT=POSCAR\n"
+        "OUTPUT=vasp.out\n"
+        "mpirun -np 1 $exe > $OUTPUT\n",
+        encoding="utf-8",
+    )
+    destination.chmod(0o600)
+    print(f"[cluster-agent] Created user VASP Slurm template: {destination}")
 
 
 def _run_interactive(command: str, cwd: Optional[str] = None, verbose: bool = True) -> None:
@@ -318,7 +376,8 @@ def _run_super_user_setup(env_file: str) -> None:
     print("TritonDFT needs a per-user remote cluster setup for this Linux account.\n")
     print("This will create/update:")
     print("  - ~/.tritondft/.env.cluster")
-    print("  - ~/.tritondft/example_slurm_job_file.txt")
+    print("  - ~/.tritondft/example_qe_slurm_job_file.txt")
+    print("  - ~/.tritondft/example_vasp_slurm_job_file.txt")
     print("  - ~/.ssh/config, if you choose to create an SSH alias\n")
 
     print("\nPlease provide the remote cluster connection details.")
@@ -357,15 +416,27 @@ def _run_super_user_setup(env_file: str) -> None:
             "CLUSTER_AGENT_POLL_SECONDS": os.environ.get("CLUSTER_AGENT_POLL_SECONDS", "30"),
             "TRITONDFT_SLURM_TEMPLATE": os.environ.get(
                 "TRITONDFT_SLURM_TEMPLATE",
-                DEFAULT_USER_SLURM_TEMPLATE,
+                DEFAULT_USER_QE_SLURM_TEMPLATE,
+            ),
+            "TRITONDFT_QE_SLURM_TEMPLATE": os.environ.get(
+                "TRITONDFT_QE_SLURM_TEMPLATE",
+                os.environ.get("TRITONDFT_SLURM_TEMPLATE", DEFAULT_USER_QE_SLURM_TEMPLATE),
+            ),
+            "TRITONDFT_VASP_SLURM_TEMPLATE": os.environ.get(
+                "TRITONDFT_VASP_SLURM_TEMPLATE",
+                DEFAULT_USER_VASP_SLURM_TEMPLATE,
             ),
             "CLUSTER_AGENT_REMOTE_QE_BIN_DIR": os.environ.get("CLUSTER_AGENT_REMOTE_QE_BIN_DIR", ""),
+            "CLUSTER_AGENT_REMOTE_VASP_COMMAND": os.environ.get("CLUSTER_AGENT_REMOTE_VASP_COMMAND", ""),
+            "CLUSTER_AGENT_VASP_POTCAR_ROOT": os.environ.get("CLUSTER_AGENT_VASP_POTCAR_ROOT", ""),
+            "CLUSTER_AGENT_VASP_FUNCTIONAL": os.environ.get("CLUSTER_AGENT_VASP_FUNCTIONAL", ""),
             "CLUSTER_AGENT_NO_QUERY_INFO": os.environ.get("CLUSTER_AGENT_NO_QUERY_INFO", "true"),
         },
     )
     _ensure_env_defaults(env_file)
     print(f"\nSetup complete. Cluster settings were written to {env_file}.")
-    print(f"Per-user Slurm template: {Path(DEFAULT_USER_SLURM_TEMPLATE).expanduser()}")
+    print(f"Per-user QE Slurm template: {Path(DEFAULT_USER_QE_SLURM_TEMPLATE).expanduser()}")
+    print(f"Per-user VASP Slurm template: {Path(DEFAULT_USER_VASP_SLURM_TEMPLATE).expanduser()}")
 
 
 @dataclass
@@ -1122,6 +1193,46 @@ def _prompt_remote_root(current: str = "") -> str:
         return remote_root.rstrip("/")
 
 
+def _prompt_dft_code(default: str = "") -> str:
+    default = (default or os.environ.get("CLUSTER_AGENT_DFT_CODE", "")).strip().lower()
+    if default in {"qe", "quantum espresso", "quantum-espresso", "quantumespresso"}:
+        default = "qe"
+    elif default in {"vasp", "v"}:
+        default = "vasp"
+    else:
+        default = "qe"
+
+    while True:
+        entered = input(
+            "\nWhich code do you want to use for this simulation?\n"
+            "  a) Quantum ESPRESSO\n"
+            "  b) VASP\n"
+            f"Select a or b [{ 'a' if default == 'qe' else 'b' }]: "
+        ).strip().lower()
+        choice = entered or ("a" if default == "qe" else "b")
+        if choice in {"a", "qe", "quantum espresso", "quantum-espresso", "quantumespresso"}:
+            return "qe"
+        if choice in {"b", "v", "vasp"}:
+            return "vasp"
+        print("Please choose 'a' for Quantum ESPRESSO or 'b' for VASP.")
+
+
+def _prompt_vasp_potcar_root(current: str = "") -> str:
+    current = (current or os.environ.get("VASP_POTCAR_ROOT", "") or os.environ.get("VASP_PP_PATH", "")).strip()
+    while True:
+        if current:
+            entered = input(f"Licensed VASP POTCAR root on local machine or cluster [{current}]: ").strip()
+            root = entered or current
+        else:
+            root = input(
+                "Licensed VASP POTCAR root on local machine or cluster, e.g. /home/$USER/VASP_PP: "
+            ).strip()
+        if not root:
+            print("VASP requires a licensed POTCAR tree. Please enter its local or cluster path.")
+            continue
+        return root
+
+
 def interactive_main() -> None:
     env_parser = argparse.ArgumentParser(add_help=False)
     env_parser.add_argument(
@@ -1178,6 +1289,40 @@ def interactive_main() -> None:
         help="Remote cluster directory containing QE executables; leave empty when module load exposes pw.x on PATH",
     )
     parser.add_argument(
+        "--qe-slurm-template",
+        default=(
+            os.environ.get("TRITONDFT_QE_SLURM_TEMPLATE")
+            or os.environ.get("TRITONDFT_SLURM_TEMPLATE", "")
+        ),
+        help="QE-specific Slurm template file",
+    )
+    parser.add_argument(
+        "--vasp-slurm-template",
+        default=os.environ.get("TRITONDFT_VASP_SLURM_TEMPLATE", ""),
+        help="VASP-specific Slurm template file",
+    )
+    parser.add_argument(
+        "--dft-code",
+        choices=["qe", "vasp"],
+        default=os.environ.get("CLUSTER_AGENT_DFT_CODE", ""),
+        help="DFT code to use: qe or vasp. If omitted, TritonDFT asks interactively.",
+    )
+    parser.add_argument(
+        "--remote-vasp-command",
+        default=os.environ.get("CLUSTER_AGENT_REMOTE_VASP_COMMAND", ""),
+        help="Remote VASP command override; blank lets TritonDFT infer vasp_std/vasp_gam/vasp_ncl from the request",
+    )
+    parser.add_argument(
+        "--vasp-potcar-root",
+        default=os.environ.get("CLUSTER_AGENT_VASP_POTCAR_ROOT", ""),
+        help="Licensed VASP POTCAR root on the local machine or cluster used to assemble POTCAR files",
+    )
+    parser.add_argument(
+        "--vasp-functional",
+        default=os.environ.get("CLUSTER_AGENT_VASP_FUNCTIONAL", ""),
+        help="VASP POTCAR functional override, e.g. PBE, PBEsol, LDA, PW91; blank lets TritonDFT infer it",
+    )
+    parser.add_argument(
         "--no-query-info",
         action="store_true",
         default=os.environ.get("CLUSTER_AGENT_NO_QUERY_INFO", "").lower() in {"1", "true", "yes", "on"},
@@ -1190,22 +1335,9 @@ def interactive_main() -> None:
     if not args.ssh_target:
         raise ValueError("SSH target is required. Set CLUSTER_AGENT_SSH_TARGET or pass --ssh-target.")
 
+    dft_code = args.dft_code or _prompt_dft_code()
     remote_root = _prompt_remote_root(args.remote_root)
 
-    dft_agent = DFTAgent(
-        model=args.model,
-        backend=args.backend,
-        verbose=True,
-        work_dir=args.work_dir,
-        run_mode="cluster_package",
-        need_query_info=not args.no_query_info,
-        evaluation_mode=False,
-        output_log=True,
-        output_log_file="remote_cluster_agent.log",
-        parallel_np=args.parallel_np,
-        auto_confirm=True,
-    )
-    dft_agent.remote_qe_bin_prefix = args.remote_qe_bin_dir
     transport = SSHClusterTransport(
         ssh_target=args.ssh_target,
         remote_root=remote_root,
@@ -1213,10 +1345,49 @@ def interactive_main() -> None:
         keep_master=not args.no_master,
         verbose=True,
     )
-    agent = RemoteClusterDFTAgent(dft_agent, transport)
+    if dft_code == "vasp":
+        potcar_root = _prompt_vasp_potcar_root(args.vasp_potcar_root)
+        vasp_agent = VASPAgent(
+            model=args.model,
+            backend=args.backend,
+            verbose=True,
+            work_dir=args.work_dir,
+            need_query_info=not args.no_query_info,
+            output_log=True,
+            output_log_file="remote_cluster_agent.log",
+            potcar_root=potcar_root,
+            vasp_command=args.remote_vasp_command,
+            functional=args.vasp_functional,
+            slurm_template_path=args.vasp_slurm_template,
+        )
+        agent = RemoteClusterVASPAgent(
+            vasp_agent=vasp_agent,
+            transport=transport,
+            parallel_np=args.parallel_np or 1,
+            vasp_command=args.remote_vasp_command,
+            slurm_template_path=args.vasp_slurm_template,
+        )
+    else:
+        if args.qe_slurm_template:
+            os.environ["TRITONDFT_SLURM_TEMPLATE"] = args.qe_slurm_template
+        dft_agent = DFTAgent(
+            model=args.model,
+            backend=args.backend,
+            verbose=True,
+            work_dir=args.work_dir,
+            run_mode="cluster_package",
+            need_query_info=not args.no_query_info,
+            evaluation_mode=False,
+            output_log=True,
+            output_log_file="remote_cluster_agent.log",
+            parallel_np=args.parallel_np,
+            auto_confirm=True,
+        )
+        dft_agent.remote_qe_bin_prefix = args.remote_qe_bin_dir
+        agent = RemoteClusterDFTAgent(dft_agent, transport)
 
     print("you are all set to run TritonDFT")
-    print("\nRemote cluster DFT agent is ready. Type 'exit' or 'quit' to stop.\n")
+    print(f"\nRemote cluster DFT agent is ready ({'VASP' if dft_code == 'vasp' else 'Quantum ESPRESSO'}). Type 'exit' or 'quit' to stop.\n")
     try:
         while True:
             query = input("DFT request> ").strip()
