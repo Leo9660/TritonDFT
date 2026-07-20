@@ -1,5 +1,10 @@
 # TritonDFT
 
+> **Installing the interactive client on a cluster?** Follow the
+> [cluster installation and checkpoint guide](CLUSTER_INSTALL.md). It documents
+> the proven Python 3.11 solution to the earlier pymatgen/GCC failure and the
+> checks to perform before repeating any expensive installation step.
+
 ## 1. Setup
 ```
 pip install -r requirements.txt
