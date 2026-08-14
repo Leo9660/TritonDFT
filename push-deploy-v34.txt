@@ -1,0 +1,124 @@
+# =============================================================================
+# DEPLOY v34  —  TritonDFT  (namespace: datahub-llm)
+# =============================================================================
+# What changed in v34:
+#
+# 1. BAND STRUCTURE WAS SILENTLY WRONG.  The planner only ever produced
+#    vc_relax -> scf -> nscf -> bands_post.  But the pw requirements restrict
+#    "K_POINTS crystal_b" to calculation='bands' and explicitly tell the model
+#    NOT to put a k-path in an nscf run.  So the nscf ran on a UNIFORM grid and
+#    bands.x post-processed the wrong k-set: the .band.gnu (and therefore the
+#    band plot in the UI) was a meaningless zigzag, not a dispersion.
+#    `pw_bands` (pw.x calculation='bands') existed in FN_MAP but was dead code.
+#
+#    Now the planner distinguishes the two workflows:
+#      band STRUCTURE -> pw_scf -> pw_bands -> bands_post
+#      band GAP only  -> pw_scf -> pw_nscf (dense uniform grid)  [no bands.x]
+#
+# 2. nbnd was only required for nscf, never for 'bands' -> a bands run computed
+#    only occupied states, so there were NO conduction bands to plot at all.
+#
+# 3. PREFIX CHAINING WAS BROKEN.  patch_qe_input_file's prefix override was
+#    commented out and the prefix never entered the next step's memory, so each
+#    step's independent LLM call picked its own prefix.  QE chains steps through
+#    <outdir>/<prefix>.save — nscf/bands read the SCF charge density from it and
+#    bands.x reads the bands run's wavefunctions from it.  Any disagreement =>
+#    bands.x silently reads a stale/nonexistent .save.  Now forced to one prefix
+#    ('qerun') per run, inserted when absent (incl. &BANDS, which has no &control).
+#
+# 4. JOB_TIMEOUT_S 300 -> 1200 and new QE_TIMEOUT_S (per-pw.x, default 600).
+#    A correct band workflow is 4 chained pw.x runs; it could not fit in 5 min.
+#
+# 5. Readable logs + plan-level human-in-the-loop (new DB columns, new endpoint).
+#
+# Image tags are IMMUTABLE: code changes REQUIRE a new tag. Both the API
+# (tritondft) and the worker (tritondft-worker) use the SAME image — bump BOTH.
+# k8s/deployment.yaml and k8s/worker.yaml are already pinned to :v34.
+# =============================================================================
+
+
+# ---- 0. Merge the branches --------------------------------------------------
+#   backend : https://github.com/Leo9660/TritonDFT/pull/new/fix/band-workflow-and-plan-hitl
+#   frontend: https://github.com/Leo9660/TritonDFT-chat/pull/new/feat/plan-review
+#
+# The frontend is backward-compatible with the OLD backend (it only reacts to the
+# new `plan` / `awaiting_plan` fields, which a v33 API never returns), so merging
+# it first is safe and will not break the live site.
+
+
+# ---- 1. Build & push the v34 image ------------------------------------------
+# NOTE: no container runtime exists in the dev container this was prepared in —
+# run this from a machine with docker.
+git checkout main && git pull
+docker build -t docker.io/yil384/tritondft:v34 .
+docker push docker.io/yil384/tritondft:v34
+
+
+# ---- 2. Roll both deployments to v34 ----------------------------------------
+# The manifests are already pinned to :v34 AND carry the new timeout env vars
+# (JOB_TIMEOUT_S=1200, QE_TIMEOUT_S=600), so apply them rather than `set image`.
+kubectl -n datahub-llm apply -f k8s/deployment.yaml -f k8s/worker.yaml
+
+
+# ---- 3. Wait for the rollout ------------------------------------------------
+kubectl -n datahub-llm rollout status deployment/tritondft-worker
+kubectl -n datahub-llm rollout status deployment/tritondft
+
+kubectl -n datahub-llm get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}' | sort -u
+# Expect every tritondft* pod -> docker.io/yil384/tritondft:v34
+
+
+# ---- 4. Confirm the DB migration ran ----------------------------------------
+# init_db() adds the new columns idempotently on worker/API start:
+#   jobs.plan, jobs.pending_plan, jobs.plan_action
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=30 | grep -i migrate
+# No "[migrate] failed:" lines expected. To check directly:
+#   kubectl -n datahub-llm exec deploy/postgres -- \
+#     psql -U postgres -d tritondft -c "\d jobs" | grep -E 'plan|pending_plan|plan_action'
+
+
+# ---- 5. Verify the band fix is live -----------------------------------------
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=80 -f --max-log-requests 8
+
+# Submit through the app:
+#   "Calculate the band structure of silicon in the diamond structure"
+#
+# Expect in the log (this is the whole point of v34):
+#   [plan] Parsed 4 steps.
+#   [plan] 1/4 · pw_vc_relax (pw.x · vc-relax) — ...
+#   [plan] 2/4 · pw_scf      (pw.x · scf)      — ...
+#   [plan] 3/4 · pw_bands    (pw.x · bands)    — ...     <-- MUST be pw_bands,
+#   [plan] 4/4 · bands_post  (bands.x)         — ...         NOT pw_nscf
+#
+# And in the generated inputs (download the run zip):
+#   - step 3 input has "K_POINTS crystal_b" and an nbnd well above 4
+#   - EVERY step has prefix = 'qerun'
+#   - a *.band.gnu is produced and the UI band plot shows a real dispersion
+#
+# Then the gap-only path, which must NOT add bands.x:
+#   "What is the band gap of silicon?"
+#   -> 3 steps, ending at pw_nscf, occupations='fixed',
+#      output contains "highest occupied, lowest unoccupied level"
+#
+# Then assistant mode: the plan should pause for review BEFORE any script is
+# generated (status awaiting_plan), and editing/reordering steps or asking for a
+# revision should take effect.
+
+
+# =============================================================================
+# ROLLBACK
+# =============================================================================
+kubectl -n datahub-llm set image deployment/tritondft        tritondft=docker.io/yil384/tritondft:v33
+kubectl -n datahub-llm set image deployment/tritondft-worker worker=docker.io/yil384/tritondft:v33
+# The new DB columns are additive and nullable — v33 ignores them, so no DB
+# rollback is needed. But note JOB_TIMEOUT_S/QE_TIMEOUT_S live in the manifests:
+# re-apply the v33 manifests if you want the old 300s wall back too.
+
+
+# =============================================================================
+# NOTE ON CAPACITY
+# =============================================================================
+# JOB_TIMEOUT_S went 300 -> 1200. With 8 worker slots, one job can now hold a
+# slot 4x longer than before. This was an explicit decision (band workflows
+# cannot complete in 5 minutes); watch queue depth after rollout and lower
+# QE_TIMEOUT_S first if the queue starts backing up.
