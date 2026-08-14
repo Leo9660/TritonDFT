@@ -6,6 +6,29 @@ from prompt.result_judge import result_judge_prompt
 from prompt.info_query import api_call_prompt
 from prompt.slurm_execution import slurm_execution_prompt
 
+def _tool_vocabulary() -> str:
+    """Render the dispatchable tool set from FN_MAP, so the planner prompt cannot
+    drift out of sync with what the code can actually run.
+
+    Each tool carries its own executable, mode and description — including the
+    constraints that used to be hand-written as planner rules (e.g. matdyn_post
+    needs q2r_post first; pw_phonon_gamma is Gamma-only and gives no dispersion).
+    Sourcing them here keeps the prompt free of duplicated domain heuristics: the
+    vocabulary describes itself.
+    """
+    from tool.tool_map import FN_MAP, ALLOWED_FNS
+
+    lines = []
+    for name in sorted(ALLOWED_FNS):
+        spec = FN_MAP.get(name)
+        if spec is None:
+            continue
+        binary = spec.exec + (f" ({spec.mode})" if spec.mode else "")
+        desc = " ".join((spec.description or "").split())
+        lines.append(f"    - {name}  [{binary}]" + (f": {desc}" if desc else ""))
+    return "\n".join(lines)
+
+
 def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
     """
     Select a prompt template by type, fill placeholders,
@@ -43,6 +66,10 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
         raise ValueError(f"Unknown prompt type: {prompt_type}")
 
     messages: List[Dict[str, str]] = []
+
+    # Planner-family prompts render the live tool set rather than a hand-copied list.
+    if prompt_type in ("planner", "plan_refine"):
+        kwargs.setdefault("tool_vocabulary", _tool_vocabulary())
 
     # --- inject header for previous_memory ---
     pm = kwargs.get("previous_memory", "")
