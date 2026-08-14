@@ -53,10 +53,15 @@ spec:
             secretKeyRef: { name: tritondft-secrets, key: CLAUDE_CODE_OAUTH_TOKEN, optional: true }
         - name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
           value: "1"
-        # Hard wall-clock cap for a single user job. Keep this short so no one
-        # can monopolize a worker slot (only 8 exist) and starve the queue.
+        # Hard wall-clock cap for a single user job. Only 8 worker slots exist,
+        # so this bounds how long one job can starve the queue. Raised from 300s
+        # because a correct band-structure workflow chains 4 pw.x runs
+        # (vc-relax -> scf -> bands -> bands.x) and could not finish in 5 min.
         - name: JOB_TIMEOUT_S
-          value: "300"
+          value: "1200"
+        # Per-pw.x cap; several of these must fit inside JOB_TIMEOUT_S.
+        - name: QE_TIMEOUT_S
+          value: "600"
         # MPI ranks per QE run — must stay ≤ the CPU limit below so we don't
         # oversubscribe cores when many pods land on one node.
         - name: JOB_NP

@@ -43,6 +43,12 @@ class StepActionBody(BaseModel):
     suggestion: Optional[str] = None     # natural-language revision request
 
 
+class PlanActionBody(BaseModel):
+    action: str                          # approve | suggest | cancel
+    steps: Optional[list] = None         # [{problem, tool, input}] — user-edited plan
+    suggestion: Optional[str] = None     # natural-language revision request
+
+
 def _valid_uuid(s: str) -> bool:
     """Guard before querying — a non-UUID would make Postgres raise on the
     uuid column comparison (500) instead of a clean 404."""
@@ -99,7 +105,7 @@ async def create_job(
     active = (
         db.query(Job)
         .filter(Job.user_id == user.id,
-                Job.status.in_(("queued", "running", "awaiting_approval")))
+                Job.status.in_(("queued", "running", "awaiting_plan", "awaiting_approval")))
         .count()
     )
     if active >= max_active:
@@ -177,6 +183,9 @@ async def get_job(
         "mode": job.mode or "auto",
         # The step + generated scripts awaiting the user's review (assistant mode).
         "pending_step": job.pending_step if job.status == "awaiting_approval" else None,
+        # The plan awaiting review (assistant mode), and the plan itself (both modes).
+        "pending_plan": job.pending_plan if job.status == "awaiting_plan" else None,
+        "plan": job.plan,
     }
 
 
@@ -192,7 +201,9 @@ async def cancel_job(
     if job is None or (job.user_id != user.id and not user.is_admin):
         raise errors.job_not_found()
 
-    if job.status in ("queued", "running"):
+    # Include the awaiting_* states: a job paused at a review gate is very much
+    # still live, and the generic cancel button should stop it too.
+    if job.status in ("queued", "running", "awaiting_plan", "awaiting_approval"):
         job.status = "cancelled"
         job.finished_at = datetime.utcnow()
         db.commit()
@@ -254,6 +265,55 @@ async def step_action(
 
     # The worker's gate polls step_action; it flips the job back to 'running'.
     job.step_action = payload
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/{job_id}/plan-action")
+async def plan_action(
+    job_id: str,
+    body: PlanActionBody,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Assistant mode: submit the user's decision for a plan awaiting review.
+
+    action=approve  → run the plan (optionally replaced by the edited `steps`)
+    action=suggest  → ask the LLM to revise the plan per `suggestion`
+    action=cancel   → cancel the whole job
+    """
+    if not _valid_uuid(job_id):
+        raise errors.job_not_found()
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if job is None or (job.user_id != user.id and not user.is_admin):
+        raise errors.job_not_found()
+
+    action = (body.action or "").lower()
+    if action not in ("approve", "suggest", "cancel"):
+        return Response(status_code=400)
+
+    if action == "cancel":
+        if job.status in ("queued", "running", "awaiting_plan", "awaiting_approval"):
+            job.status = "cancelled"
+            job.finished_at = datetime.utcnow()
+            db.commit()
+            try:
+                reconcile(db, job.usage_log_id, job.user_id, job.model,
+                          None, count_tokens(job.output or "")[0])
+            except Exception as e:
+                print(f"[jobs] plan-action cancel reconcile failed for {job_id}: {e}")
+        return {"ok": True, "status": job.status}
+
+    if job.status != "awaiting_plan":
+        return Response(status_code=409)
+
+    payload = {"action": action}
+    if action == "approve" and body.steps:
+        payload["steps"] = body.steps
+    if action == "suggest":
+        payload["suggestion"] = body.suggestion or ""
+
+    job.plan_action = payload
     db.commit()
     return {"ok": True}
 
