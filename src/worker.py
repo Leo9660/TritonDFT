@@ -31,6 +31,9 @@ from DFTAgent import DFTAgent, JobCancelled
 
 WORKER_ID = os.environ.get("HOSTNAME", socket.gethostname())
 JOB_TIMEOUT_S = int(os.environ.get("JOB_TIMEOUT_S", "1800"))   # 30 min
+# Per-pw.x wall. A band-structure workflow is 4 chained pw.x runs, so this has to
+# leave room for several of them inside JOB_TIMEOUT_S.
+QE_TIMEOUT_S = int(os.environ.get("QE_TIMEOUT_S", "600"))      # 10 min
 # Assistant mode: how long a step's script waits for human review before the
 # worker auto-continues with the generated script as-is. The execution-timeout
 # clock is paused while waiting, so this never eats into JOB_TIMEOUT_S.
@@ -117,6 +120,60 @@ def resume_after_gate(job_id, cancelled: bool):
     db = SessionLocal()
     try:
         fields = {"pending_step": None, "step_action": None}
+        if not cancelled:
+            fields["status"] = "running"
+        db.query(Job).filter(Job.id == job_id).update(fields)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+# ───── Plan-gate DB helpers ─────
+
+def save_plan(job_id, steps):
+    """Record the agent's plan. Runs in both modes — the UI renders from this
+    instead of parsing <subproblem> blocks out of the log."""
+    db = SessionLocal()
+    try:
+        db.query(Job).filter(Job.id == job_id).update({"plan": steps})
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def set_awaiting_plan(job_id, pending: dict):
+    """Publish the plan for review and flip the job to awaiting_plan."""
+    db = SessionLocal()
+    try:
+        db.query(Job).filter(Job.id == job_id).update(
+            {"status": "awaiting_plan", "pending_plan": pending, "plan_action": None})
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def read_plan_gate(job_id):
+    """Return (status, plan_action) for the plan gate poll loop."""
+    db = SessionLocal()
+    try:
+        j = db.query(Job).filter(Job.id == job_id).first()
+        if j is None:
+            return (None, None)
+        return (j.status, j.plan_action)
+    finally:
+        db.close()
+
+
+def resume_after_plan_gate(job_id, cancelled: bool):
+    db = SessionLocal()
+    try:
+        fields = {"pending_plan": None, "plan_action": None}
         if not cancelled:
             fields["status"] = "running"
         db.query(Job).filter(Job.id == job_id).update(fields)
@@ -281,6 +338,48 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
             emit("\n▶️ Running your edited script.\n")
         return decision
 
+    def plan_gate(payload):
+        """Record the plan; in assistant mode also block for the user's review.
+
+        Runs in BOTH modes so the plan is always persisted structurally — auto
+        mode records and approves in one shot without touching job status.
+        """
+        steps = payload.get("steps") or []
+        save_plan(job_id, steps)
+        if mode != "assistant":
+            return {"action": "approve"}
+
+        emit(f"\n\n⏸️ Assistant mode — review the {len(steps)}-step plan. "
+             f"Approve, edit the steps, or ask for a revision. "
+             f"Auto-continues in {APPROVAL_TIMEOUT_S // 60} min.\n")
+        set_awaiting_plan(job_id, payload)
+        state["paused"] = True
+        wait_start = time.time()
+        decision = {"action": "approve"}
+        try:
+            while True:
+                time.sleep(APPROVAL_POLL_S)
+                status, action = read_plan_gate(job_id)
+                if status is None or status == "cancelled":
+                    decision = {"action": "cancel"}
+                    break
+                if action:
+                    decision = action
+                    break
+                if time.time() - wait_start > APPROVAL_TIMEOUT_S:
+                    emit("\n▶️ No response — continuing with the generated plan.\n")
+                    break
+        finally:
+            resume_after_plan_gate(job_id, cancelled=(decision.get("action") == "cancel"))
+            state["deadline"] += (time.time() - wait_start)
+            state["paused"] = False
+        act = decision.get("action")
+        if act == "suggest":
+            emit("\n▶️ Revising the plan per your suggestion…\n")
+        elif act == "approve" and decision.get("steps"):
+            emit("\n▶️ Running your edited plan.\n")
+        return decision
+
     gate = approval_gate if mode == "assistant" else None
 
     class Catcher:
@@ -306,7 +405,7 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
 
     def agent_thread():
         try:
-            agent.run(query, approval_gate=gate)
+            agent.run(query, approval_gate=gate, plan_gate=plan_gate)
         except JobCancelled:
             # Clean stop — the user cancelled at an approval gate. The DB status
             # is already 'cancelled'; nothing to report as an error.
@@ -408,10 +507,11 @@ def main():
         # MPI ranks per QE run — keep ≤ the container CPU limit (8) so we don't
         # oversubscribe cores.
         parallel_np=int(os.environ.get("JOB_NP", "8")),
-        # Per-pw.x cap, kept just under the JOB_TIMEOUT_S wall (300s) so a single
-        # runaway step is killed cleanly by the executor (agent finalizes, pod
-        # survives) instead of tripping the job-level wall that hard-restarts the pod.
-        qe_timeout_seconds=270,
+        # Per-pw.x cap. Must stay below the JOB_TIMEOUT_S wall so a single runaway
+        # step is killed cleanly by the executor (agent finalizes, pod survives)
+        # instead of tripping the job-level wall that hard-restarts the pod — but
+        # comfortably under it, since a band workflow chains 4 pw.x runs.
+        qe_timeout_seconds=QE_TIMEOUT_S,
         # MP gives un-relaxed initial structures, so the planner always prepends
         # a vc-relax step. Set FORCE_VC_RELAX=0 to let the planner decide instead.
         force_vc_relax=os.environ.get("FORCE_VC_RELAX", "1").lower() not in ("0", "false", "no"),

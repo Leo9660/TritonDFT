@@ -50,6 +50,7 @@ ALLOWED_FNS: Set[str] = {
     "matdyn_post",
     "dynmat_post",
     "pw_phonon_gamma",
+    "elastic_post",
 }
 
 # ---- Canonical mapping from fn -> ToolSpec ----
@@ -109,7 +110,7 @@ FN_MAP: Dict[str, ToolSpec] = {
         exec="bands.x",
         required=(),
         optional=("input_from", "plot", "emin", "emax"),
-        description="Postprocess band structure after pw.x SCF/NSCF",
+        description="Postprocess band eigenvalues into plottable data (requires a preceding pw_bands step)",
         requirement_key="bands",
         parse_requirement_key="bandsx",
     ),

@@ -1,5 +1,5 @@
 from typing import Dict, List, Union
-from prompt.planner import planner_messages
+from prompt.planner import planner_messages, planner_messages_no_force, plan_refine_messages
 from prompt.tool_setup import parameter_prompt, script_prompt_fixed
 from prompt.result_parse import result_parse_prompt
 from prompt.result_judge import result_judge_prompt
@@ -19,7 +19,12 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
         List[Dict[str, str]]: Chat-style messages ready for LLM.
     """
     if prompt_type == "planner":
-        template = planner_messages
+        # Default ON: structures come from MP as initial guesses, so always
+        # relax first. Set force_vc_relax=False to let the planner decide.
+        force_vc_relax = kwargs.get("force_vc_relax", True)
+        template = planner_messages if force_vc_relax else planner_messages_no_force
+    elif prompt_type == "plan_refine":
+        template = plan_refine_messages
     elif prompt_type == "parameter":
         template = parameter_prompt
     elif prompt_type == "script":
