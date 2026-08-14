@@ -384,8 +384,24 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
 
     class Catcher:
         def write(self, t):
-            if not t or _TQDM_RE.search(t) or _BLANK_RE.match(t):
+            if not t or _TQDM_RE.search(t):
                 return
+            # print() emits the text and its trailing "\n" as SEPARATE write()
+            # calls. Dropping every whitespace-only chunk therefore swallowed
+            # EVERY newline, concatenating the entire log into one line — which
+            # broke any consumer that anchors on line starts. Keep chunks that
+            # carry a newline (normalised to a single one); still drop pure
+            # spaces/tabs and blank padding.
+            if _BLANK_RE.match(t):
+                if "\n" not in t:
+                    return
+                # Collapse runs of blank lines — a filtered chunk (tqdm, pure
+                # indentation) still emits its own trailing newline, which would
+                # otherwise pile up and eat into OUTPUT_CAP.
+                with buf_lock:
+                    if buf and buf[-1].endswith("\n"):
+                        return
+                t = "\n"
             cleaned = t.replace("\r", "")
             if not cleaned:
                 return
