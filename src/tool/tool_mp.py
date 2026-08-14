@@ -168,11 +168,6 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
     # result["conventional_structure"].append(conventional)
     # result["primitive_structure"].append(primitive)
 
-    if verbose:
-        print(f"[MP] Retrieved materials ID: {min_id}")
-        print(f"[MP] Conventional structure: {conventional}")
-        print(f"[MP] Primitive structure: {primitive}")
-
     gt = {}
     try:
         s = relaxed_lookup.get(min_id)
@@ -195,6 +190,43 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
     except Exception:
         pass
     result["ground_truth"] = gt
+
+    # Compact, structured summary for the streamed log. The full structures used
+    # to be printed via Structure.__repr__ — dozens of lines of site coordinates
+    # that drowned out everything else. They're written to CIF files by the
+    # caller instead, and surfaced behind a "details" toggle in the UI.
+    summary = {"material_id": min_id}
+    try:
+        summary["formula"] = primitive.composition.reduced_formula
+        summary["n_sites_primitive"] = len(primitive)
+        summary["n_sites_conventional"] = len(conventional)
+    except Exception:
+        pass
+    if ehull_min != float("inf"):
+        summary["energy_above_hull"] = round(ehull_min, 4)
+    for k in ("space_group", "space_group_number", "crystal_system", "point_group"):
+        if k in gt:
+            summary[k] = gt[k]
+    for k in ("a", "b", "c", "alpha", "beta", "gamma"):
+        if k in gt:
+            summary[k] = round(gt[k], 4)
+    result["summary"] = summary
+
+    if verbose:
+        sg = summary.get("space_group", "?")
+        sgn = summary.get("space_group_number")
+        sg_txt = f"{sg} (#{sgn})" if sgn else sg
+        bits = [
+            str(min_id),
+            summary.get("formula", "?"),
+            sg_txt,
+            summary.get("crystal_system", "?"),
+        ]
+        print(f"[MP] {' · '.join(bits)}")
+        if "a" in summary:
+            print(f"[MP] a={summary['a']} b={summary['b']} c={summary['c']} Å · "
+                  f"α={summary['alpha']}° β={summary['beta']}° γ={summary['gamma']}° · "
+                  f"{summary.get('n_sites_primitive', '?')} sites (primitive)")
 
     # print("[MP result]", result)
 

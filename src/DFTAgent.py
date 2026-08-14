@@ -13,7 +13,7 @@ from prompt.tool_requirements import get_parse_requirement
 from config import Config
 from generator import UnifiedGenerator
 from execute_code.slurm import SlurmLauncher
-from tool import get_spec, fetch_material_info_from_api_snippet, build_tool_requirements
+from tool import get_spec, fetch_material_info_from_api_snippet, build_tool_requirements, is_allowed_fn
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
 parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file, \
 validate_pseudos_exist
@@ -125,6 +125,9 @@ class DFTAgent:
         self.force_vc_relax = force_vc_relax
         self.mpid_output_file = str(mpid_output_file) if mpid_output_file else None
         self.system_num = 0
+        # Every step of a run shares one QE prefix — see patch_qe_input_file.
+        # Each run gets its own work_dir, so a constant can't collide.
+        self._run_prefix = "qerun"
 
         if self.verbose:
             print(f"[DFTAgent] Initialized with model={model}, dft_tool={dft_tool}, work_dir_root={self.work_dir_root}")
@@ -261,10 +264,41 @@ class DFTAgent:
         if self.output_log:
             output_to_log_file(self.work_dir_root, self.output_log_file, f"[info_query] Retrieved material information: {fetch_result.get('material_ids', ['N/A'])[0]}")
 
-        if self.verbose and fetch_result.get('initial_structures'):
-             print(f"[info_query] Retrieved material information: {fetch_result['initial_structures'][0][0]}")
+        self._write_structure_files(fetch_result)
 
         return fetch_result
+
+    def _write_structure_files(self, material_info: Dict[str, Any]) -> None:
+        """Persist the fetched structures as CIF + a summary JSON in the run dir.
+
+        These used to be print()-ed in full into the streamed log. Writing them
+        as files keeps them available (the artifacts endpoint already whitelists
+        .cif/.json) without flooding the transcript.
+        """
+        try:
+            summary = material_info.get("summary") or {}
+            if summary:
+                (self.work_dir / "material.json").write_text(
+                    json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            for key, name in (("primitive_structure", "structure_primitive.cif"),
+                              ("conventional_structure", "structure_conventional.cif")):
+                items = material_info.get(key) or []
+                if not items:
+                    continue
+                try:
+                    (self.work_dir / name).write_text(items[0].to(fmt="cif"), encoding="utf-8")
+                except Exception:
+                    pass
+
+            initial = material_info.get("initial_structures") or []
+            if initial:
+                # Already CIF text (see tool_mp), not a Structure object.
+                (self.work_dir / "structure_initial.cif").write_text(
+                    str(initial[0]), encoding="utf-8")
+        except Exception as e:
+            if self.verbose:
+                print(f"[info_query][warn] could not write structure files: {e}")
 
     def plan(self, query: str) -> List[Dict[str, Any]]:
         if self.verbose:
@@ -275,18 +309,164 @@ class DFTAgent:
         try:
             prompt_text = messages[0]["content"]
             raw_out = self.generator(prompt_text, max_new_tokens=self.max_new_tokens, return_full_text=False)
-            if self.verbose:
-                print(f"[plan] LLM raw output received: {raw_out[0]['generated_text']}")
         except Exception as e:
             if self.verbose:
                 print(f"[plan][error] model call failed: {e}")
             return None
 
         plan_dict = parse_plan_string(raw_out[0]["generated_text"])
-        if self.verbose:
-            print(f"[plan] Parsed {len(plan_dict)} steps.")
-
+        self._log_plan(plan_dict)
         return plan_dict
+
+    @staticmethod
+    def _step_meta(tool: str) -> Dict[str, str]:
+        """Resolve a logical tool name to its executable + mode, for display.
+
+        Never raises: an LLM (or a user editing the plan) can produce an unknown
+        tool name, and a display helper must not take the run down.
+        """
+        try:
+            spec = get_spec(tool)
+        except (KeyError, ValueError):
+            return {"exec": "", "mode": "", "description": "", "valid": False}
+        return {
+            "exec": spec.exec,
+            "mode": spec.mode or "",
+            "description": spec.description or "",
+            "valid": True,
+        }
+
+    @classmethod
+    def plan_payload(cls, subproblems: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Structured, UI-ready view of a plan.
+
+        The API stores this on the job row so the frontend renders real fields
+        instead of scraping `<subproblem>` tags out of the stdout blob.
+        """
+        out = []
+        for i, s in enumerate(subproblems or []):
+            tool = (s.get("tool") or "").strip()
+            meta = cls._step_meta(tool)
+            out.append({
+                "id": s.get("id", i + 1),
+                "index": i + 1,
+                "problem": (s.get("problem") or "").strip(),
+                "tool": tool,
+                "input": (s.get("input") or "").strip(),
+                "exec": meta["exec"],
+                "mode": meta["mode"],
+                "description": meta["description"],
+                "valid": meta["valid"],
+            })
+        return out
+
+    def _log_plan(self, subproblems: List[Dict[str, Any]]) -> None:
+        """Emit one readable line per step.
+
+        Deliberately does NOT dump the raw <subproblem> blocks: that blob was the
+        single noisiest thing in the streamed log, and everything useful in it is
+        already in the structured fields below.
+        """
+        steps = self.plan_payload(subproblems)
+        print(f"[plan] Parsed {len(steps)} steps.")
+        for s in steps:
+            binary = s["exec"] or "?"
+            if s["mode"]:
+                binary += f" · {s['mode']}"
+            suffix = "" if s["valid"] else "  [unknown tool]"
+            print(f"[plan] {s['index']}/{len(steps)} · {s['tool']} ({binary}) — {s['problem']}{suffix}")
+
+    def refine_plan(self, subproblems: List[Dict[str, Any]], query: str, suggestion: str):
+        """Re-plan from a user's natural-language instruction.
+
+        Deliberately regenerates the WHOLE plan rather than patching one step:
+        a suggestion like "drop the relaxation" or "add a DOS step" changes the
+        step list, not just one field.
+        """
+        current = "\n".join(
+            f"<subproblem{s['index']}>\n"
+            f"Problem: {s['problem']}\n"
+            f"Tool: {s['tool']}\n"
+            f"Required input: {s['input']}\n"
+            f"</subproblem{s['index']}>"
+            for s in self.plan_payload(subproblems)
+        )
+        messages = get_prompt(prompt_type="plan_refine", question=query, tool=self.dft_tool,
+                              current_plan=current, suggestion=suggestion)
+        try:
+            raw_out = self.generator(messages[0]["content"], max_new_tokens=self.max_new_tokens,
+                                     return_full_text=False)
+            revised = parse_plan_string(raw_out[0]["generated_text"])
+        except Exception as e:
+            # Keep the previous plan rather than failing the run — the user can
+            # edit it by hand or just approve it.
+            print(f"[plan][error] revision failed, keeping the previous plan: {e}")
+            return subproblems
+        print(f"[plan] Revised the plan per your suggestion.")
+        self._log_plan(revised)
+        return revised
+
+    def _review_plan(self, subproblems: List[Dict[str, Any]], query: str, plan_gate) -> List[Dict[str, Any]]:
+        """Human-in-the-loop gate on the PLAN, before any script is generated.
+
+        Returns the (possibly edited) plan. Raises JobCancelled if the user
+        cancels. Loops so the user can iterate: suggest → review → suggest → run.
+        """
+        MAX_ROUNDS = 10
+        for _ in range(MAX_ROUNDS):
+            decision = plan_gate({
+                "query": query,
+                "steps": self.plan_payload(subproblems),
+            }) or {}
+            action = decision.get("action", "approve")
+
+            if action == "cancel":
+                raise JobCancelled()
+
+            if action == "suggest":
+                suggestion = str(decision.get("suggestion", "")).strip()
+                if suggestion:
+                    subproblems = self.refine_plan(subproblems, query, suggestion)
+                continue
+
+            edited = decision.get("steps")
+            if edited:
+                merged = self._apply_plan_edits(subproblems, edited)
+                if merged is not None:
+                    subproblems = merged
+                    print("[plan] Running your edited plan.")
+                    self._log_plan(subproblems)
+            return subproblems
+
+        print("[plan][warn] too many revision rounds; running the current plan.")
+        return subproblems
+
+    @staticmethod
+    def _apply_plan_edits(subproblems, edited):
+        """Rebuild the plan from user-edited steps.
+
+        Drops steps whose tool isn't in the allowed set — a bad tool name would
+        otherwise blow up later in get_spec() with the run already half-done.
+        """
+        rebuilt = []
+        for i, item in enumerate(edited or []):
+            if not isinstance(item, dict):
+                continue
+            tool = str(item.get("tool", "")).strip()
+            if not is_allowed_fn(tool):
+                print(f"[plan][warn] dropping step {i + 1}: unknown tool '{tool}'")
+                continue
+            rebuilt.append({
+                "id": i + 1,
+                "problem": str(item.get("problem", "")).strip(),
+                "tool": tool,
+                "input": str(item.get("input", "")).strip(),
+                "sweep": None,
+            })
+        if not rebuilt:
+            print("[plan][warn] edited plan had no valid steps; keeping the original.")
+            return None
+        return rebuilt
 
     def solve_sub_problem(self, subproblem: Dict[str, Any], problem_id: int = 0, query: str = "", total_memory: str = "", material_info: Dict = [], approval_gate=None) -> Any:
         if self.verbose:
@@ -394,9 +574,8 @@ class DFTAgent:
             
             # Patch Inputs
             missing_pseudo_err: Optional[str] = None
-            for i, path in enumerate(input_paths):
-                exec_id = f"{problem_id}_{loop_count}_{i}"
-                patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir, new_prefix=f"subproblem_{exec_id}", pp_dir_clean=True)
+            for path in input_paths:
+                patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir, new_prefix=self._run_prefix, pp_dir_clean=True)
                 # Fail fast (within the retry loop) if a pseudopotential the
                 # LLM requested is missing — otherwise pw.x crashes with an
                 # obscure mpirun rc=132.
@@ -465,9 +644,8 @@ class DFTAgent:
                         with open(path, "w") as f:
                             f.write(str(item.get("content", "")).rstrip() + "\n\n")
                     # Re-apply path/prefix patching so QE still finds pseudos & outdir.
-                    for i, path in enumerate(input_paths):
-                        exec_id = f"{problem_id}_{loop_count}_{i}"
-                        patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir, new_prefix=f"subproblem_{exec_id}", pp_dir_clean=True)
+                    for path in input_paths:
+                        patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir, new_prefix=self._run_prefix, pp_dir_clean=True)
 
             if self.script_only:
                 return {
@@ -660,6 +838,7 @@ class DFTAgent:
         material_name: str = "",
         work_dir: Optional[str] = None,
         approval_gate=None,
+        plan_gate=None,
     ) -> Any:
         
         # --- Global Timer Start ---
@@ -722,6 +901,12 @@ class DFTAgent:
             if self.verbose:
                 print("[run] No valid plan generated. Exiting.")
             return None
+
+        # Publish the plan (and, in assistant mode, block for the user's review /
+        # edits) before any script is generated. Runs in both modes: the auto-mode
+        # hook just records the plan and approves immediately.
+        if plan_gate is not None:
+            subproblems = self._review_plan(subproblems, query, plan_gate)
 
         # --- Phase 2: Subproblem Execution ---
         total_memory = ""
