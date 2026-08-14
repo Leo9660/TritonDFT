@@ -10,11 +10,17 @@ _BAND_RULES = """
     - To PLOT a band structure / dispersion: pw_scf -> `pw_bands` -> `bands_post`.
       NEVER use `pw_nscf` as the k-path step: bands.x would post-process a uniform
       grid and produce a meaningless plot.
-    - To obtain only a BAND GAP number (no plot): pw_scf -> `pw_nscf` on a dense
-      uniform grid is sufficient — pw.x prints the highest occupied and lowest
-      unoccupied levels. Do NOT add `pw_bands`/`bands_post` for a gap-only query.
-    - If the query wants BOTH a gap and a plot:
-      pw_scf -> pw_nscf (uniform, for the gap) -> pw_bands (path) -> bands_post.
+    - BAND GAP RULE (applies whenever the query asks for a gap AT ALL, in any
+      wording — including "band gap along a high-symmetry path"): the plan MUST
+      contain a `pw_nscf` step on a dense UNIFORM grid. A `pw_bands` run does not
+      determine occupations or the Fermi level (its k-point weights are path
+      points, not a BZ sampling), so pw.x prints no "highest occupied, lowest
+      unoccupied level" and NO GAP CAN BE READ FROM IT. `pw_nscf` is the only
+      step that yields the gap.
+        * gap only, no plot  -> pw_scf -> pw_nscf                 (do NOT add pw_bands/bands_post)
+        * gap AND a path/plot -> pw_scf -> pw_nscf -> pw_bands -> bands_post
+      Mentioning a high-symmetry path NEVER removes the pw_nscf step; it only
+      ADDS the pw_bands + bands_post steps after it.
     - `bands_post` (bands.x) is post-processing ONLY and MUST be preceded by a
       `pw_bands` step. Never place `bands_post` directly after `pw_nscf`.
     - `dos_post` requires a uniform-grid `pw_nscf`, never a `pw_bands` step.
@@ -108,7 +114,42 @@ planner_messages = {
 
     ---
 
-    ### In-Context Example 3 (equilibrium lattice constant unknown)
+    ### In-Context Example 3 (band GAP *and* a high-symmetry path — needs BOTH)
+    Query: Calculate the band gap of silicon along the high-symmetry path.
+
+    <subproblem1>
+    Problem: Relax the cell and atomic positions to obtain the equilibrium structure
+    Tool: pw_vc_relax
+    Required input: initial diamond Si structure
+    </subproblem1>
+
+    <subproblem2>
+    Problem: Do an SCF calculation to converge charge density
+    Tool: pw_scf
+    Required input: relaxed structure from the vc_relax step
+    </subproblem2>
+
+    <subproblem3>
+    Problem: Run NSCF on a dense uniform k-grid to resolve the valence band maximum and conduction band minimum
+    Tool: pw_nscf
+    Required input: relaxed structure, SCF charge density
+    </subproblem3>
+
+    <subproblem4>
+    Problem: Compute eigenvalues along the high-symmetry k-path
+    Tool: pw_bands
+    Required input: relaxed structure, SCF charge density, high-symmetry path
+    </subproblem4>
+
+    <subproblem5>
+    Problem: Post-process the band eigenvalues into plottable band-structure data
+    Tool: bands_post
+    Required input: pw_bands results with the same prefix/outdir
+    </subproblem5>
+
+    ---
+
+    ### In-Context Example 4 (equilibrium lattice constant unknown)
     Query: Calculate the equilibrium lattice constant of Na in the BCC structure.
 
     <subproblem1>
