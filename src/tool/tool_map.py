@@ -72,7 +72,8 @@ FN_MAP: Dict[str, ToolSpec] = {
         required=(),
         optional=("kpoints", "kpath", "kpath_points", "occupations", "ibrav",
                   "structure", "structure_from"),
-        description="Non-self-consistent run for DOS/bands preparation",
+        description="Non-self-consistent run on a uniform k-grid. Reports occupations and the "
+                    "highest occupied / lowest unoccupied levels, so this is the step that yields a band gap.",
         requirement_key="pw",
         parse_requirement_key="nscf",
     ),
@@ -100,7 +101,9 @@ FN_MAP: Dict[str, ToolSpec] = {
         mode="bands",
         required=(),
         optional=("kpath", "kpath_points", "ibrav", "structure", "structure_from"),
-        description="Bands mode with pw.x (alternative to bands.x postprocessing)",
+        description="Eigenvalues along an explicit high-symmetry k-path (K_POINTS crystal_b). "
+                    "Reads a preceding SCF charge density. Does NOT determine occupations or "
+                    "the Fermi level, so a band gap cannot be read from it.",
         requirement_key="pw",
         parse_requirement_key="pw_bands",
     ),
