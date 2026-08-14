@@ -469,9 +469,10 @@ class DFTAgent:
         return rebuilt
 
     def solve_sub_problem(self, subproblem: Dict[str, Any], problem_id: int = 0, query: str = "", total_memory: str = "", material_info: Dict = [], approval_gate=None) -> Any:
-        if self.verbose:
-            print(f"[solve_sub_problem] Solving subproblem: {subproblem['problem']}")
-            print(f"[solve_sub_problem] Using tool: {subproblem['tool']}")
+        # No announcement here: run() already prints "[run] Executing step N/M:
+        # <problem>" with the same text, and the plan card shows the tool. Both
+        # lines used to be emitted and read as duplicates once the streamed log
+        # stopped concatenating everything onto one line.
 
         # --- Subproblem Timing Accumulators ---
         # These must accumulate over the potential loops/retries
@@ -489,8 +490,11 @@ class DFTAgent:
         try:
             params_out = self.generator(prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
             params_json = params_out[0]['generated_text']
+            # Don't dump the raw parameter JSON into the streamed log — it is a
+            # multi-line LLM blob the user can't act on, and the values that
+            # matter end up in the generated input file anyway (downloadable).
             if self.verbose:
-                print(f"[solve_sub_problem] parameter output received: {params_json}")
+                print(f"[solve_sub_problem] Parameters ready ({len(params_json)} chars).")
         except Exception as e:
             if self.verbose:
                 print(f"[solve_sub_problem][error] subproblem solve failed: {e}")
