@@ -227,6 +227,24 @@ def flush_output(job_id, output: str):
         db.close()
 
 
+def publish_run_dir(job_id, agent) -> bool:
+    """Record the agent's run directory mid-flight so /files can serve the inputs
+    while the job is still running. Returns True once it has been written."""
+    try:
+        wd = Path(str(agent.work_dir))
+        if wd == Path(WORK_DIR) or not (wd / "run_meta.json").exists():
+            return False
+        db = SessionLocal()
+        try:
+            db.query(Job).filter(Job.id == job_id).update({"run_dir": str(wd)})
+            db.commit()
+        finally:
+            db.close()
+        return True
+    except Exception:
+        return False
+
+
 def is_cancelled(job_id) -> bool:
     db = SessionLocal()
     try:
@@ -443,10 +461,17 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
     t.start()
 
     status = "done"
+    published_run_dir = False
     # try/finally guarantees stdout is restored even if the poll loop raises —
     # otherwise a hijacked stdout would leak into the next job on this worker.
     try:
         while not done.wait(timeout=FLUSH_INTERVAL_S):
+            # Publish the run directory as soon as the agent creates it, not at
+            # finalize. Until this lands the /files endpoint has nothing to serve,
+            # so a user watching a live run — or one who just hit stop — sees no
+            # scripts at all, even though they are already on disk.
+            if not published_run_dir:
+                published_run_dir = publish_run_dir(job_id, agent)
             # Don't enforce the execution timeout while paused for human review;
             # the gate extends state["deadline"] by the waited time on resume.
             if not state["paused"] and time.time() > state["deadline"]:

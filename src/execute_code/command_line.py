@@ -60,7 +60,9 @@ def _run_commands(
         cmd = build_cmd(exec_path, os.path.basename(in_path), os.path.basename(out_path))
 
         if verbose:
-            print(f"[runner] Running: {cmd} (cwd={work_dir})")
+            from execute_code.mpi_run import _describe_cmd, _log_full_cmd
+            print(f"[runner] Running {_describe_cmd(cmd)}")
+            _log_full_cmd(cmd, work_dir)
 
         rc, stdout, stderr, timed_out = _run_bash_command(
             cmd, work_dir, verbose, timeout_seconds=timeout_seconds

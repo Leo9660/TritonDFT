@@ -16,6 +16,7 @@ from pathlib import Path
 USEFUL_EXTS = {
     ".in", ".out", ".xml", ".json", ".band", ".gnu",
     ".dat", ".txt", ".log", ".cif", ".csv",
+    ".sh",   # run_all.sh — the runner emitted for script-only bundles
 }
 # Internal bookkeeping files surfaced elsewhere (result cards / Analysis section)
 # — hide them from the user-facing file list and zip.

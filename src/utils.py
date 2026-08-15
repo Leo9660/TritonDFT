@@ -329,9 +329,9 @@ def preprocess_output_list(output_list: List[str], verbose: bool = False) -> Lis
 
         text, capped = _cap_output_text(text)
 
-        if verbose and (r1 + r2 > 0 or capped):
-            extra = " + capped" if capped else ""
-            print(f"[parser] Output {idx}: trimmed {r1} lines (bands) + {r2} lines (scf/iter){extra}.")
+        # Trimming counts are internal bookkeeping for fitting the output into the
+        # model's context — they mean nothing to the user watching the run, so they
+        # stay out of the streamed log.
         processed.append(text)
     return processed
 
