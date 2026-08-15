@@ -76,6 +76,23 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
     if pm is not None and str(pm) != "":
         kwargs["previous_memory"] = "\n ### Memory of previous subproblems\n" + str(pm) + "\n"
     # ----------------------------------------
+    # --- inject header for previous_inputs ---
+    # The literal input files earlier steps ran. Without these the model is asked
+    # to "reuse the same cutoffs / cell / occupations as the SCF" with nothing to
+    # reuse from — previous_memory carries only parsed RESULTS (energies), never
+    # the inputs — so every shared setting silently drifts step to step.
+    pi = kwargs.get("previous_inputs", "")
+    if pi is not None and str(pi) != "":
+        kwargs["previous_inputs"] = (
+            "\n ### Input files already generated for THIS system, in order.\n"
+            " The current step reads what these produced, so every setting they share"
+            " (cell, atomic positions, cutoffs, pseudopotentials, occupations, spin,"
+            " prefix/outdir) MUST match exactly. Change only what this step requires.\n"
+            + str(pi) + "\n"
+        )
+    else:
+        kwargs["previous_inputs"] = ""
+    # ----------------------------------------
     # --- inject header for initial_structures ---
     # qi = kwargs.get("initial_structures", "")
     # if qi is not None and str(qi) != "":
