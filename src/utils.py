@@ -7,6 +7,22 @@ def get_qe_prefix(self):
     return getattr(self, "qe_bin_prefix", None) or os.environ.get("QE_BIN_PREFIX", "")
 
 
+def read_qe_cutoffs(in_path: str) -> Dict[str, str]:
+    """Read ecutwfc/ecutrho out of a QE input, so later steps in the same run can
+    be pinned to the values the SCF actually used."""
+    out: Dict[str, str] = {}
+    try:
+        with open(in_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return out
+    for key in ("ecutwfc", "ecutrho"):
+        m = re.search(rf"^[ \t]*{key}[ \t]*=[ \t]*([^,\s]+)", text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            out[key] = m.group(1)
+    return out
+
+
 def _set_or_insert_control_key(text: str, key: str, value: str) -> str:
     """Set `key='value'` in the first namelist of a QE input, inserting the line
     if it isn't there.
@@ -45,7 +61,8 @@ def patch_qe_input_file(
     # Pseudopotential replacement policy (choose one or both; pp_map has higher priority):
     pp_dir: Optional[str] = None,          # replace the 3rd column .UPF file with pp_dir/original-filename
     pp_map: Optional[Dict[str, str]] = None,  # species name -> pseudopotential file path (absolute or relative)
-    pp_dir_clean: Optional[bool] = False
+    pp_dir_clean: Optional[bool] = False,
+    new_cutoffs: Optional[Dict[str, str]] = None,   # {"ecutwfc": "80", "ecutrho": "320"}
 ) -> None:
     """
     In-place modification of QE input file:
@@ -87,6 +104,19 @@ def patch_qe_input_file(
     # chain (bands.x reads a stale or nonexistent .save and emits garbage).
     if new_prefix:
         text = _set_or_insert_control_key(text, "prefix", new_prefix)
+    # Same reasoning as prefix: nscf/bands runs read the SCF charge density, so
+    # their plane-wave cutoffs MUST match the SCF run that produced it. Each
+    # step's input comes from an independent LLM call that cannot see the earlier
+    # file, so asking the model to "reuse the same cutoffs" does not hold — it
+    # drifts (e.g. ecutrho 320 -> 360 on the bands step). Pin them numerically.
+    if new_cutoffs:
+        for key, value in new_cutoffs.items():
+            pattern = re.compile(
+                rf"(^[ \t]*{re.escape(key)}[ \t]*=[ \t]*)([^,\s]+)",
+                re.IGNORECASE | re.MULTILINE,
+            )
+            if pattern.search(text):
+                text = pattern.sub(rf"\g<1>{value}", text)
 
     # Process ATOMIC_SPECIES block
     lines = text.splitlines()
