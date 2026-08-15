@@ -130,6 +130,9 @@ class DFTAgent:
         self._run_prefix = "qerun"
         # Filled from the first pw.x input of a run; pinned onto every later step.
         self._run_cutoffs: Dict[str, str] = {}
+        # The literal input files earlier steps of this run generated, fed into
+        # later steps' script prompts so shared settings stay consistent.
+        self._run_inputs: List[str] = []
 
         if self.verbose:
             print(f"[DFTAgent] Initialized with model={model}, dft_tool={dft_tool}, work_dir_root={self.work_dir_root}")
@@ -484,6 +487,8 @@ class DFTAgent:
 
         total_result_json = ""
         error_code = ""
+        # Where this step's entries start in the run-wide input log (see below).
+        inputs_mark = len(self._run_inputs)
         
         # 1. Parameter Generation
         t0 = time.perf_counter()
@@ -541,6 +546,7 @@ class DFTAgent:
                     upf_dir=self.pseudo_dir,
                     previous_run=error_code,
                     previous_memory=total_memory,
+                    previous_inputs="\n\n".join(self._run_inputs),
                     fn_section=fn_spec.section,
                     query=query,
                     initial_structures=initial_structures,
@@ -556,6 +562,7 @@ class DFTAgent:
                     params_json=params_json,
                     upf_dir=self.pseudo_dir,
                     previous_memory=total_memory,
+                    previous_inputs="\n\n".join(self._run_inputs),
                     fn_section=fn_spec.section,
                     query=query,
                     initial_structures=initial_structures,
@@ -662,6 +669,19 @@ class DFTAgent:
                         patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
                                             new_prefix=self._run_prefix, pp_dir_clean=True,
                                             new_cutoffs=self._run_cutoffs)
+
+            # Record this step's FINAL inputs (post-patch, post-user-edit) so later
+            # steps can see them. Truncating to the entry-time mark first keeps a
+            # retry from stacking several attempts of the same step.
+            del self._run_inputs[inputs_mark:]
+            for path in input_paths:
+                try:
+                    with open(path, "r") as f:
+                        self._run_inputs.append(
+                            f"# --- step {problem_id} ({subproblem.get('tool','')}), "
+                            f"{os.path.basename(path)} ---\n{f.read().strip()}")
+                except OSError:
+                    pass
 
             if self.script_only:
                 return {
@@ -926,6 +946,7 @@ class DFTAgent:
 
         # --- Phase 2: Subproblem Execution ---
         total_memory = ""
+        self._run_inputs = []   # per-run, not per-agent — the worker reuses the agent
         
         # Lists for CSV (per subproblem)
         subproblem_dft_times = []

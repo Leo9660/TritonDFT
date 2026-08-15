@@ -42,7 +42,9 @@ script_prompt_fixed = {
     {tool_requirements}
 
     {previous_memory}
-    
+
+    {previous_inputs}
+
     {previous_run}
 
     Only apply targeted corrections to the script based on the errors above; do not change any other guessed parameters unnecessarily.
