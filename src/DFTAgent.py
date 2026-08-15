@@ -16,7 +16,7 @@ from execute_code.slurm import SlurmLauncher
 from tool import get_spec, fetch_material_info_from_api_snippet, build_tool_requirements, is_allowed_fn
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
 parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file, \
-validate_pseudos_exist
+validate_pseudos_exist, read_qe_cutoffs
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
 
@@ -128,6 +128,8 @@ class DFTAgent:
         # Every step of a run shares one QE prefix — see patch_qe_input_file.
         # Each run gets its own work_dir, so a constant can't collide.
         self._run_prefix = "qerun"
+        # Filled from the first pw.x input of a run; pinned onto every later step.
+        self._run_cutoffs: Dict[str, str] = {}
 
         if self.verbose:
             print(f"[DFTAgent] Initialized with model={model}, dft_tool={dft_tool}, work_dir_root={self.work_dir_root}")
@@ -579,7 +581,15 @@ class DFTAgent:
             # Patch Inputs
             missing_pseudo_err: Optional[str] = None
             for path in input_paths:
-                patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir, new_prefix=self._run_prefix, pp_dir_clean=True)
+                patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
+                                    new_prefix=self._run_prefix, pp_dir_clean=True,
+                                    new_cutoffs=self._run_cutoffs)
+                # The first pw.x step of a run fixes the cutoffs every later step
+                # must reuse — they all read the same charge density.
+                if not self._run_cutoffs and fn_spec.exec == "pw.x":
+                    self._run_cutoffs = read_qe_cutoffs(path)
+                    if self.verbose and self._run_cutoffs:
+                        print(f"[solve_sub_problem] Run cutoffs pinned: {self._run_cutoffs}")
                 # Fail fast (within the retry loop) if a pseudopotential the
                 # LLM requested is missing — otherwise pw.x crashes with an
                 # obscure mpirun rc=132.
@@ -649,7 +659,9 @@ class DFTAgent:
                             f.write(str(item.get("content", "")).rstrip() + "\n\n")
                     # Re-apply path/prefix patching so QE still finds pseudos & outdir.
                     for path in input_paths:
-                        patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir, new_prefix=self._run_prefix, pp_dir_clean=True)
+                        patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
+                                            new_prefix=self._run_prefix, pp_dir_clean=True,
+                                            new_cutoffs=self._run_cutoffs)
 
             if self.script_only:
                 return {
