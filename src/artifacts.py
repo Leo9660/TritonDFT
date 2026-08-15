@@ -113,9 +113,11 @@ def extract_result(run_dir: Path) -> dict:
         pass
 
     energies = []
-    gap = None
+    # gap candidates keyed by the calculation that produced them, so we can pick
+    # the trustworthy one instead of "whichever file sorted last".
+    gaps = {}
     try:
-        for f in sorted(run_dir.glob("output_*.out")):
+        for f in _sorted_outputs(run_dir):
             text = f.read_text(errors="ignore")
             for m in re.finditer(r"total energy\s*=\s*(-?\d+\.\d+)\s*Ry", text):
                 energies.append(float(m.group(1)))
@@ -128,9 +130,17 @@ def extract_result(run_dir: Path) -> dict:
                 occ, unocc = float(gm.group(1)), float(gm.group(2))
                 g = round(unocc - occ, 4)
                 if g >= 0:
-                    gap = g
+                    gaps[_calculation_of(f)] = g
     except Exception:
         pass
+
+    # A 'bands' run samples only the high-symmetry path, so its highest-occupied /
+    # lowest-unoccupied pair is the extremum over THAT PATH — it overestimates the
+    # gap whenever the true band edge lies off the path (for silicon the CBM sits
+    # at ~0.85 along Gamma-X). The uniform-grid nscf is the authoritative source;
+    # scf is the fallback. This used to be "last output file wins", which meant a
+    # trailing bands step silently overwrote the nscf value.
+    gap = next((gaps[k] for k in ("nscf", "scf", "relax", "vc-relax") if k in gaps), None)
 
     if energies:
         result["final_energy_ry"] = round(energies[-1], 6)
@@ -138,6 +148,30 @@ def extract_result(run_dir: Path) -> dict:
     if gap is not None:
         result["band_gap_ev"] = gap
     return result
+
+
+def _sorted_outputs(run_dir: Path):
+    """Run outputs in step order.
+
+    Names are output_<step>_<n>.out, so a plain lexicographic sort puts step 10
+    before step 2. Sort on the numeric fields instead.
+    """
+    def key(p: Path):
+        nums = [int(x) for x in re.findall(r"\d+", p.stem)]
+        return (nums, p.name)
+    return sorted(run_dir.glob("output_*.out"), key=key)
+
+
+def _calculation_of(output_path: Path) -> str:
+    """The pw.x `calculation` that produced an output, read from its sibling
+    input file (output_2_1.out -> input_2_1.in). Empty string if unknown."""
+    in_path = output_path.parent / (output_path.stem.replace("output_", "input_", 1) + ".in")
+    try:
+        text = in_path.read_text(errors="ignore")
+    except OSError:
+        return ""
+    m = re.search(r"^\s*calculation\s*=\s*['\"]([\w-]+)['\"]", text, re.IGNORECASE | re.MULTILINE)
+    return m.group(1).lower() if m else ""
 
 
 def _extract_fermi(run_dir: Path):
@@ -153,7 +187,12 @@ def _extract_fermi(run_dir: Path):
     """
     fermi = None
     try:
-        for f in sorted(run_dir.glob("output_*.out")):
+        for f in _sorted_outputs(run_dir):
+            # A 'bands' run does not determine the Fermi level (its k-point
+            # weights are path points, not a BZ sampling). Skip it so it can't
+            # overwrite the scf/nscf value the plot should be referenced to.
+            if _calculation_of(f) == "bands":
+                continue
             text = f.read_text(errors="ignore")
             m = re.findall(r"the Fermi energy is\s+(-?\d+\.\d+)\s*ev", text)
             if m:
