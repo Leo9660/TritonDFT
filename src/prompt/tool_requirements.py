@@ -45,10 +45,16 @@ pw_requirement_template = """
       the number of occupied Kohn-Sham states + 10. Without it pw.x computes only
       the occupied bands, so there is NO conduction band and neither a band gap
       nor a band structure can be obtained.
-    - calculation = 'nscf' uses a UNIFORM grid: use "K_POINTS automatic", denser
-      than the SCF grid. Do NOT put a high-symmetry path in an nscf run.
-    - calculation = 'bands' uses an explicit HIGH-SYMMETRY PATH: use
-      "K_POINTS crystal_b" (see the BANDS section below). Never 'automatic'.
+    - This pipeline gives the two run types separate jobs. Quantum ESPRESSO itself
+      would accept a k-path in an nscf run (bands.x can post-process either), but
+      here we keep the roles distinct so each step has one purpose and the band gap
+      always comes from a proper Brillouin-zone sampling:
+        * calculation = 'nscf'  -> UNIFORM grid. Use "K_POINTS automatic", denser
+          than the SCF grid. This is the step that yields the band gap. Do not put
+          a high-symmetry path here.
+        * calculation = 'bands' -> HIGH-SYMMETRY PATH. Use "K_POINTS crystal_b"
+          (see the BANDS section below), never 'automatic'. This is the step
+          bands.x post-processes into a dispersion plot.
     - For a band GAP on a semiconductor/insulator, set occupations='fixed' so pw.x
       prints "highest occupied, lowest unoccupied level". With occupations='smearing'
       it prints only a Fermi energy and the gap cannot be read off.
