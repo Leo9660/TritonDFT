@@ -1,11 +1,46 @@
 import os
 import re
 import shlex
+import sys
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from execute_code.command_line import _run_bash_command, _run_commands
 from prompt.auto_parallel import auto_parallel_prompt
+
+
+def _describe_cmd(cmd: str) -> str:
+    """A short, user-facing description of a QE invocation.
+
+    "mpirun --allow-run-as-root --bind-to none --oversubscribe -np 8
+     /workspace/QuantumE/bin/pw.x -in input_3_1.in | tee output_3_1.out"
+    -> "pw.x on 8 MPI ranks (input_3_1.in)"
+    """
+    binary = ""
+    m = re.search(r"(\b\w+\.x)\b", cmd)
+    if m:
+        binary = m.group(1)
+    np = ""
+    m = re.search(r"-np\s+(\d+)", cmd)
+    if m:
+        np = f" on {m.group(1)} MPI ranks"
+    src = ""
+    m = re.search(r"-(?:in|inp|input_file)\s+(\S+)", cmd)
+    if m:
+        src = f" ({os.path.basename(m.group(1))})"
+    return f"{binary or 'command'}{np}{src}"
+
+
+def _log_full_cmd(cmd: str, work_dir: str) -> None:
+    """Full invocation to the real stdout only — kept out of the user-facing
+    stream (which the worker hijacks) but still present in the pod logs."""
+    try:
+        stream = sys.__stdout__
+        if stream is not None:
+            stream.write(f"[runner] cmd: {cmd} (cwd={work_dir})\n")
+            stream.flush()
+    except Exception:
+        pass
 
 
 def run_with_mpirun(
@@ -79,7 +114,11 @@ def _run_mpirun_command(
             output_path = _extract_output_path(cmd, work_dir)
 
         if verbose:
-            print(f"[runner] Running: {cmd} (cwd={work_dir})")
+            # The user-facing line names the binary, not the whole mpirun
+            # invocation with its flags and cwd — that is debugging detail, and
+            # the full command is still visible in the pod logs below.
+            print(f"[runner] Running {_describe_cmd(cmd)}")
+        _log_full_cmd(cmd, work_dir)
         rc, stdout, stderr, timed_out = _run_bash_command(
             cmd, work_dir, verbose, timeout_seconds=timeout_seconds
         )
