@@ -365,6 +365,7 @@ The Command line must use $exe, $INPUT, and $OUTPUT exactly, so it can be insert
             input_name=input_name,
             output_name=output_name,
         )
+        command_line = _enforce_safe_qe_parallel_flags(exec_name, command_line)
 
         resources = _extract_slurm_resource_line(generated)
         mpi_ranks = _extract_mpi_ranks(command_line) or parallel_np or 1
@@ -418,11 +419,13 @@ The Command line must use $exe, $INPUT, and $OUTPUT exactly, so it can be insert
         else:
             time_limit = "00:30:00"
 
-        return {
-            "command_line": (
+        command_line = (
                 f"export OMP_NUM_THREADS=1; mpirun --allow-run-as-root -np {mpi_ranks} "
                 "$exe -in $INPUT > $OUTPUT"
-            ),
+            )
+        command_line = _enforce_safe_qe_parallel_flags(exec_name, command_line)
+        return {
+            "command_line": command_line,
             "mpi_ranks": mpi_ranks,
             "nodes": 1,
             "tasks_per_node": mpi_ranks,
@@ -677,6 +680,13 @@ def _extract_slurm_resource_line(generated: str) -> Dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _enforce_safe_qe_parallel_flags(exec_name: str, command_line: str) -> str:
+    """Prevent ph.x band-diagonalization groups from exceeding small nbnd values."""
+    if exec_name != "ph.x" or re.search(r"(?:^|\s)-(?:nd|ndiag)\s+\d+", command_line):
+        return command_line
+    return re.sub(r"\$exe\b", "$exe -nd 1", command_line, count=1)
+
+
 def _extract_mpi_ranks(command_line: str) -> int:
     patterns = [
         r"\b(?:mpirun|mpiexec)\b.*?(?:-np|-n)\s+(\d+)",
@@ -758,7 +768,7 @@ def _ensure_parameter(
             break
 
     if start_idx is None:
-        insertion = f"&{namelist}\n{key} = {value}\n/\n"
+        insertion = f"&{namelist}\n  {key} = {value},\n/\n"
         return insertion + content
 
     key_pattern = re.compile(rf"^\s*{key}\s*=", re.IGNORECASE)
@@ -767,13 +777,14 @@ def _ensure_parameter(
             insert_idx = idx
             break
         if key_pattern.match(lines[idx]):
-            lines[idx] = f"{key} = {value}"
-            return "\n".join(lines)
+            indent = re.match(r"^\s*", lines[idx]).group(0)
+            lines[idx] = f"{indent}{key} = {value},"
+            return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
     else:
         insert_idx = len(lines)
 
-    lines.insert(start_idx + 1, f"{key} = {value}")
-    return "\n".join(lines)
+    lines.insert(start_idx + 1, f"  {key} = {value},")
+    return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
 
 
 def _extract_probe_summary(probe_output: str) -> str:

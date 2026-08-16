@@ -11,6 +11,9 @@ parameter_prompt = {
     choose values that are accurate and numerically stable (i.e., likely to converge),
     while keeping computational cost (time and memory) reasonably low.
     4) Do NOT output any {tool} input files.
+    5) Keep scientific choices dynamic rather than relying on fixed material-name rules. When relevant to the current problem, explicitly decide bulk/slab dimensionality and phase, vdW treatment, magnetic order and initial site moments, collinear/noncollinear spin, SOC, DFT+U formulation/value, occupations, and requested orbital projections.
+    6) Record a short reason and confidence for every relevant vdW, magnetism, SOC, or DFT+U decision. If evidence is insufficient, say that the choice is uncertain instead of silently omitting it.
+    7) Preserve scientific settings supplied in previous workflow memory within their declared branch and scope. A dependent step must not independently change XC, pseudopotential identity/relativity, cutoffs, the complete vdW model (including vdw_corr, dftd3_version, damping and three-body controls), spin, SOC, Hubbard settings, magnetic species labels, or structure provenance. Do not propagate an electronic-only SOC refinement backward into relaxation or into the scalar-relativistic baseline branch.
 
     ### Output Schema
     {{
@@ -20,6 +23,13 @@ parameter_prompt = {
     }},
     "parameter_guesses": {{
         "<only the parameters directly relevant to the query>": "<value>"
+    }},
+    "scientific_decisions": {{
+        "<only relevant decisions such as vdw|magnetism|soc|dft_plus_u|dimensionality>": {{
+            "choice": "<selected choice or explicit not-used decision>",
+            "reason": "<short physical justification>",
+            "confidence": "high|medium|low"
+        }}
     }}
     }}
 
