@@ -23,6 +23,21 @@ planner_messages = {
     - Use `matdyn_post` ONLY for full phonon dispersion / DOS along q-paths, and only AFTER `q2r_post` has produced real-space force constants (flfrc).
     - Use `dynmat_post` for a SINGLE-q (e.g. Gamma-only) ph.x dynamical matrix file (.dynG / .dyn). Do NOT pair `dynmat_post` with `q2r_post`.
     - For a Gamma-only stability check, ph.x already prints frequencies in cm-1 in its own output; an additional dynmat_post step is optional, not mandatory.
+    - If BOTH phonon dispersion and Raman properties are requested, create TWO distinct `pw_phonon_gamma` steps: one uniform q-grid step for q2r/matdyn and one Gamma-only Raman step with a problem description that explicitly says Raman and Gamma. The Gamma Raman step may be followed by dynmat_post.
+
+    Electronic post-processing rules:
+    - Use `pw_bands` (calculation='bands') for eigenvalues along a high-symmetry path, followed by `bands_post`.
+    - Use a separate `pw_nscf` uniform dense k-grid for DOS/PDOS, followed by `dos_post` and, when projected DOS is requested, `projwfc_post`.
+    - Never claim that bands.x, dos.x, projwfc.x, or matdyn.x alone renders an image; their numerical results must be included for later deterministic plotting.
+    - Produce ONE recommended executable workflow, not both a baseline and an optional duplicate. Never put a step described as optional into the executable plan. Put alternatives in approval questions instead.
+    - Do not add cutoff tests, k-point convergence sweeps, or other convergence-study steps unless the user explicitly requests convergence testing.
+    - Minimize steps while retaining required producer/consumer executables. For a relaxed SOC band structure, the normal chain is exactly: scalar-relativistic vc-relax -> fully relativistic SOC SCF on the fixed relaxed geometry -> SOC pw_bands -> bands_post.
+    - If DOS is also requested, add only the required dense SOC pw_nscf -> dos_post chain. Do not duplicate scalar and SOC DOS unless comparison was explicitly requested.
+
+    Scientific setup rules:
+    - Keep scientific choices dynamic. When relevant, state in the problem/required input that the step must decide and preserve bulk-vs-slab dimensionality, phase/space group, vdW treatment, magnetic order, spin polarization, SOC, DFT+U, and requested orbital projections.
+    - Magnetic moments require a spin-polarized ground-state workflow and a projection/output step capable of extracting site-resolved moments.
+    - Follow the supplied pre-plan scientific assessment. Do not expand an optional refinement into duplicate executable branches. If the assessment recommends SOC for the requested final electronic result, use SOC only in the final SCF/electronic chain and keep structural relaxation scalar-relativistic.
 
     <|user|>
     You are a senior Quantum ESPRESSO planner.

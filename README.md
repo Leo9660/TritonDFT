@@ -91,11 +91,10 @@ editable input file. No SSH connection or Slurm submission starts until
 `Approve & Run` is selected.
 
 Slurm scripts are deliberately not generated during this approval phase.
-Immediately before each approved `pw.x` or `ph.x` step runs, TritonDFT uploads
-a short, time-limited probe input, executes it on the remote cluster, fetches
-the reported k-point/band/FFT parallelization information, and then generates
-the real Slurm script from that runtime evidence. Lightweight post-processing
-executables are packaged at execution time without an unnecessary probe.
+After approval, TritonDFT uses deterministic resource fallbacks and the user's
+site-specific Slurm template. It does not run shortened copies of relaxation,
+SCF, NSCF, bands, or phonon calculations as resource probes; every submitted
+scientific job is part of the requested workflow.
 
 For workflows beginning with `vc-relax`, later `pw.x` files show a
 `TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER` during review. After relaxation,

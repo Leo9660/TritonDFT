@@ -15,8 +15,8 @@ DEFAULT_PSEUDO_DIRS = {
     "LDA": "PseudoDojo/SR_v0.4.1/LDA_standard",
     "PBE": "PseudoDojo/SR_v0.4.1/PBE_standard",
     "PBESOL": "PseudoDojo/SR_v0.4.1/PBEsol_standard",
-    "PBE_FR": "PseudoDojo/SR_v0.4.1/PBE_fr",
-    "PBESOL_FR": "PseudoDojo/SR_v0.4.1/PBEsol_fr",
+    "PBE_FR": "PseudoDojo/FR_v0.4/PBE_standard",
+    "PBESOL_FR": "PseudoDojo/FR_v0.4/PBEsol_standard",
 }
 DEFAULT_QE_BIN_DIR = "QuantumE/bin"
 
@@ -95,27 +95,12 @@ class Config:
             "PBESOL_FR": _resolve(pseudo.PBESOL_FR),
         }
 
-        # Fallback for missing/empty pseudo dirs.  PseudoDojo FR sets ship
-        # separately from SR; if the FR directory doesn't exist (or is
-        # empty) we transparently re-point the FR slot to its non-FR sibling
-        # so a spin-orbit request degrades gracefully to scalar-relativistic
-        # instead of crashing with "file ... not found" inside pw.x.  Same
-        # idea: if any slot is missing, fall back to PBE_standard as a
-        # last-resort.
+        # Never cross-fallback between XC families or relativistic levels.
+        # A missing same-family library must fail clearly instead of silently
+        # producing a scientifically inconsistent calculation.
         def _has_upfs(d: str) -> bool:
             p = Path(d)
             return p.is_dir() and any(p.glob("*.upf")) or any(p.glob("*.UPF"))
-
-        pbe_fallback = resolved["PBE"] if _has_upfs(resolved["PBE"]) else None
-        if pbe_fallback:
-            if not _has_upfs(resolved["PBE_FR"]):
-                resolved["PBE_FR"] = pbe_fallback
-            if not _has_upfs(resolved["PBESOL_FR"]):
-                resolved["PBESOL_FR"] = resolved["PBESOL"] if _has_upfs(resolved["PBESOL"]) else pbe_fallback
-            if not _has_upfs(resolved["LDA"]):
-                resolved["LDA"] = pbe_fallback
-            if not _has_upfs(resolved["PBESOL"]):
-                resolved["PBESOL"] = pbe_fallback
 
         pseudo = PseudoPaths(**resolved)
 

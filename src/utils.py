@@ -17,7 +17,8 @@ def patch_qe_input_file(
     # Pseudopotential replacement policy (choose one or both; pp_map has higher priority):
     pp_dir: Optional[str] = None,          # replace the 3rd column .UPF file with pp_dir/original-filename
     pp_map: Optional[Dict[str, str]] = None,  # species name -> pseudopotential file path (absolute or relative)
-    pp_dir_clean: Optional[bool] = False
+    pp_dir_clean: Optional[bool] = False,
+    force_new_step: bool = False,
 ) -> None:
     """
     In-place modification of QE input file:
@@ -51,6 +52,8 @@ def patch_qe_input_file(
         text = _replace_key(text, "pseudo_dir", new_pseudo_dir)
     if new_outdir:
         text = _replace_key(text, "outdir", new_outdir)
+    if force_new_step and re.search(r"(?mi)^\s*restart_mode\s*=", text):
+        text = _replace_key(text, "restart_mode", "from_scratch")
     # if new_prefix:
     #     text = _replace_key(text, "prefix", new_prefix)
 
@@ -582,11 +585,14 @@ def get_qe_result(
     input_paths: list,
     verbose: bool = False,
     subproblem_id: Optional[int] = None,
+    output_paths: Optional[list] = None,
 ) -> list:
     input_text = []
     output_text = []
     for idx, in_path in enumerate(input_paths, start=1):
-        if subproblem_id is None:
+        if output_paths and idx <= len(output_paths):
+            out_path = output_paths[idx - 1]
+        elif subproblem_id is None:
             out_path = os.path.join(work_dir, f"output_{idx}.out")
         else:
             out_path = os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out")
