@@ -41,8 +41,23 @@ pw_requirement_template = """
         1. Do NOT specify smearing or degauss.
 
     [band calculations]
-    - When calculation = 'nscf', you MUST set nbnd as the number of Kohn-Sham states + 10.
-    - You don't need to set up the k path in nscf, but set it when calculation = 'bands'.
+    - nbnd (CRITICAL): when calculation = 'nscf' OR 'bands', you MUST set nbnd to
+      the number of occupied Kohn-Sham states + 10. Without it pw.x computes only
+      the occupied bands, so there is NO conduction band and neither a band gap
+      nor a band structure can be obtained.
+    - This pipeline gives the two run types separate jobs. Quantum ESPRESSO itself
+      would accept a k-path in an nscf run (bands.x can post-process either), but
+      here we keep the roles distinct so each step has one purpose and the band gap
+      always comes from a proper Brillouin-zone sampling:
+        * calculation = 'nscf'  -> UNIFORM grid. Use "K_POINTS automatic", denser
+          than the SCF grid. This is the step that yields the band gap. Do not put
+          a high-symmetry path here.
+        * calculation = 'bands' -> HIGH-SYMMETRY PATH. Use "K_POINTS crystal_b"
+          (see the BANDS section below), never 'automatic'. This is the step
+          bands.x post-processes into a dispersion plot.
+    - For a band GAP on a semiconductor/insulator, set occupations='fixed' so pw.x
+      prints "highest occupied, lowest unoccupied level". With occupations='smearing'
+      it prints only a Fermi energy and the gap cannot be read off.
 
     [Atomic positions]
     - Header MUST be exactly: ATOMIC_POSITIONS (crystal)
@@ -57,8 +72,10 @@ pw_requirement_template = """
     - The number of ATOMIC_SPECIES entries MUST match ntyp exactly.
 
     [Filenames / reuse]
-    - For brand-new runs: set &control prefix='system_<number>' (system_0, system_1, ...).
-    - For follow-up runs: reuse the exact same prefix/outdir/wfcdir as the source SCF.
+    - Set &control prefix='qerun'. Every step of this workflow MUST use this exact
+      same prefix — nscf/bands read the SCF charge density from <outdir>/<prefix>.save,
+      and bands.x reads the bands run's wavefunctions from the same place. Do NOT
+      invent a per-step prefix such as 'system_0' / 'system_1'.
     - Always set in &control: outdir='./' and wfcdir='./'.
 
     [Convergence thresholds]
@@ -160,7 +177,7 @@ bandsx_requirement_template = """
     - No extra sections, no comments, no markdown.
 
     [Paths / reuse]
-    - Always set in &BANDS: prefix='<same as pw.x>', outdir='./'
+    - Always set in &BANDS: prefix='qerun', outdir='./'
     - prefix and outdir MUST match the source pw.x run exactly.
 
     [Output]

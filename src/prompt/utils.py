@@ -1,10 +1,33 @@
 from typing import Dict, List, Union
-from prompt.planner import planner_messages
+from prompt.planner import planner_messages, planner_messages_no_force, plan_refine_messages
 from prompt.tool_setup import parameter_prompt, script_prompt_fixed
 from prompt.result_parse import result_parse_prompt
 from prompt.result_judge import result_judge_prompt
 from prompt.info_query import api_call_prompt
 from prompt.slurm_execution import slurm_execution_prompt
+
+def _tool_vocabulary() -> str:
+    """Render the dispatchable tool set from FN_MAP, so the planner prompt cannot
+    drift out of sync with what the code can actually run.
+
+    Each tool carries its own executable, mode and description — including the
+    constraints that used to be hand-written as planner rules (e.g. matdyn_post
+    needs q2r_post first; pw_phonon_gamma is Gamma-only and gives no dispersion).
+    Sourcing them here keeps the prompt free of duplicated domain heuristics: the
+    vocabulary describes itself.
+    """
+    from tool.tool_map import FN_MAP, ALLOWED_FNS
+
+    lines = []
+    for name in sorted(ALLOWED_FNS):
+        spec = FN_MAP.get(name)
+        if spec is None:
+            continue
+        binary = spec.exec + (f" ({spec.mode})" if spec.mode else "")
+        desc = " ".join((spec.description or "").split())
+        lines.append(f"    - {name}  [{binary}]" + (f": {desc}" if desc else ""))
+    return "\n".join(lines)
+
 
 def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
     """
@@ -19,7 +42,12 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
         List[Dict[str, str]]: Chat-style messages ready for LLM.
     """
     if prompt_type == "planner":
-        template = planner_messages
+        # Default ON: structures come from MP as initial guesses, so always
+        # relax first. Set force_vc_relax=False to let the planner decide.
+        force_vc_relax = kwargs.get("force_vc_relax", True)
+        template = planner_messages if force_vc_relax else planner_messages_no_force
+    elif prompt_type == "plan_refine":
+        template = plan_refine_messages
     elif prompt_type == "parameter":
         template = parameter_prompt
     elif prompt_type == "script":
@@ -39,10 +67,31 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
 
     messages: List[Dict[str, str]] = []
 
+    # Planner-family prompts render the live tool set rather than a hand-copied list.
+    if prompt_type in ("planner", "plan_refine"):
+        kwargs.setdefault("tool_vocabulary", _tool_vocabulary())
+
     # --- inject header for previous_memory ---
     pm = kwargs.get("previous_memory", "")
     if pm is not None and str(pm) != "":
         kwargs["previous_memory"] = "\n ### Memory of previous subproblems\n" + str(pm) + "\n"
+    # ----------------------------------------
+    # --- inject header for previous_inputs ---
+    # The literal input files earlier steps ran. Without these the model is asked
+    # to "reuse the same cutoffs / cell / occupations as the SCF" with nothing to
+    # reuse from — previous_memory carries only parsed RESULTS (energies), never
+    # the inputs — so every shared setting silently drifts step to step.
+    pi = kwargs.get("previous_inputs", "")
+    if pi is not None and str(pi) != "":
+        kwargs["previous_inputs"] = (
+            "\n ### Input files already generated for THIS system, in order.\n"
+            " The current step reads what these produced, so every setting they share"
+            " (cell, atomic positions, cutoffs, pseudopotentials, occupations, spin,"
+            " prefix/outdir) MUST match exactly. Change only what this step requires.\n"
+            + str(pi) + "\n"
+        )
+    else:
+        kwargs["previous_inputs"] = ""
     # ----------------------------------------
     # --- inject header for initial_structures ---
     # qi = kwargs.get("initial_structures", "")

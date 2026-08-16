@@ -1,167 +1,170 @@
+# NOTE: every template below is rendered with str.format(**kwargs) in
+# prompt/utils.py — literal braces must be doubled. Keep the output format
+# XML-ish (<subproblemN>) rather than JSON so no escaping is needed.
+#
+# DESIGN: this prompt encodes the SYSTEM CONTRACT only — the output shape and the
+# exact set of tool names this codebase can dispatch. It deliberately does NOT
+# encode Quantum ESPRESSO domain knowledge (when bands vs nscf, how to get a gap,
+# which phonon post-processor pairs with which). Hand-written physics rules here
+# were tried and repeatedly misfired: each new phrasing fell between them, and
+# the original nscf->bands.x bug was itself CAUSED by an in-context example that
+# taught the wrong workflow. The model knows QE; let it plan.
+#
+# Keep exactly one worked example, and keep it physics-neutral, so it teaches the
+# FORMAT without biasing the workflow.
+
+_OUTPUT_RULES = """
+    Output requirements:
+    - Decompose the user query into 1..N subproblems.
+    - Each subproblem must be wrapped as <subproblem1>...</subproblem1>, <subproblem2>...</subproblem2>, etc. (in order).
+    - Each subproblem must contain exactly four fields:
+    Problem: What to calculate
+    Tool: Tool to use
+    Required input: Required input parameters (Do not give any concrete parameter value here, just describe what is needed)
+    Why: Why this step is necessary and what later step or requested result depends on it
+    These fields MUST appear on separate lines, each separated by a newline; otherwise, the output is considered incorrect.
+    - Keep each subproblem short (exactly the four required field lines).
+    - Do not output anything outside <subproblem> blocks.
+
+    Tool vocabulary — the `Tool:` field MUST be exactly one of these names.
+    This is the COMPLETE set of capabilities available; there is nothing else.
+{tool_vocabulary}
+    Plan whatever sequence of these is scientifically correct for the query, and
+    make sure every step's prerequisites are produced by an earlier step. If the
+    query asks for something this tool set cannot actually produce, plan the
+    closest thing it CAN produce rather than misusing a tool.
+
+    Workflow correctness rules:
+    - Use `pw_bands` for an explicit high-symmetry electronic path, followed by `bands_post`.
+    - Use a separate dense uniform-grid `pw_nscf` for DOS/PDOS, followed by `dos_post` and, when requested, `projwfc_post`.
+    - Use `matdyn_post` only after a uniform-q-grid phonon calculation and `q2r_post`. Use `dynmat_post` for a single-q dynamical matrix.
+    - If both phonon dispersion and Gamma Raman are requested, make the uniform q-grid and Gamma-only Raman calculations distinct; the Gamma calculation must explicitly request Raman response.
+    - Produce one minimal executable workflow. Do not add optional duplicate branches or convergence sweeps unless the user requests them.
+    - Preserve relevant scientific choices across dependent steps: dimensionality, phase, exchange-correlation and vdW treatment, magnetism, SOC, DFT+U, pseudopotential compatibility, cutoffs, and orbital projections.
+    - Treat SOC according to the supplied scientific assessment. When SOC is needed only for final electronic properties, relax scalar-relativistically and use SOC in the final SCF and dependent electronic steps.
+"""
+
 planner_messages = {
     "role": "user",
     "content": """
     <|system|>
     You are a strict planning assistant for Quantum ESPRESSO ({tool}).
-
-    Output requirements:
-    - Decompose the user query into 1..N subproblems.
-    - Each subproblem must be wrapped as <subproblem1>...</subproblem1>, <subproblem2>...</subproblem2>, etc. (in order).
-	- Each subproblem must contain four fields:
-	Problem: What to calculate
-	Tool: Tool to use
-	Required input: Required input parameters (Do not give any concrete parameter value here, just describe what is needed)
-	Why: Why this step is necessary and what later step or requested result depends on it
-    These fields MUST appear on separate lines, each separated by a newline; otherwise, the output is considered incorrect.
-    - Keep each subproblem short (exactly the four required field lines).
-    - Do not output anything outside <subproblem> blocks.
-
-    Core rules:
-    Allowed tools: pw_scf, pw_nscf, pw_relax, pw_vc_relax, pw_bands, bands_post, dos_post, projwfc_post, pp_post, q2r_post, matdyn_post, dynmat_post, pw_phonon_gamma, elastic_post.
-
-    Phonon post-processing rule:
-    - Use `matdyn_post` ONLY for full phonon dispersion / DOS along q-paths, and only AFTER `q2r_post` has produced real-space force constants (flfrc).
-    - Use `dynmat_post` for a SINGLE-q (e.g. Gamma-only) ph.x dynamical matrix file (.dynG / .dyn). Do NOT pair `dynmat_post` with `q2r_post`.
-    - For a Gamma-only stability check, ph.x already prints frequencies in cm-1 in its own output; an additional dynmat_post step is optional, not mandatory.
-    - If BOTH phonon dispersion and Raman properties are requested, create TWO distinct `pw_phonon_gamma` steps: one uniform q-grid step for q2r/matdyn and one Gamma-only Raman step with a problem description that explicitly says Raman and Gamma. The Gamma Raman step may be followed by dynmat_post.
-
-    Electronic post-processing rules:
-    - Use `pw_bands` (calculation='bands') for eigenvalues along a high-symmetry path, followed by `bands_post`.
-    - Use a separate `pw_nscf` uniform dense k-grid for DOS/PDOS, followed by `dos_post` and, when projected DOS is requested, `projwfc_post`.
-    - Never claim that bands.x, dos.x, projwfc.x, or matdyn.x alone renders an image; their numerical results must be included for later deterministic plotting.
-    - Produce ONE recommended executable workflow, not both a baseline and an optional duplicate. Never put a step described as optional into the executable plan. Put alternatives in approval questions instead.
-    - Do not add cutoff tests, k-point convergence sweeps, or other convergence-study steps unless the user explicitly requests convergence testing.
-    - Minimize steps while retaining required producer/consumer executables. For a relaxed SOC band structure, the normal chain is exactly: scalar-relativistic vc-relax -> fully relativistic SOC SCF on the fixed relaxed geometry -> SOC pw_bands -> bands_post.
-    - If DOS is also requested, add only the required dense SOC pw_nscf -> dos_post chain. Do not duplicate scalar and SOC DOS unless comparison was explicitly requested.
-
-    Scientific setup rules:
-    - Keep scientific choices dynamic. When relevant, state in the problem/required input that the step must decide and preserve bulk-vs-slab dimensionality, phase/space group, vdW treatment, magnetic order, spin polarization, SOC, DFT+U, and requested orbital projections.
-    - Magnetic moments require a spin-polarized ground-state workflow and a projection/output step capable of extracting site-resolved moments.
-    - Follow the supplied pre-plan scientific assessment. Do not expand an optional refinement into duplicate executable branches. If the assessment recommends SOC for the requested final electronic result, use SOC only in the final SCF/electronic chain and keep structural relaxation scalar-relativistic.
+""" + _OUTPUT_RULES + """
+    Structure rule (this is a fact about this pipeline, not a preference):
+    - Every query starts from an INITIAL structure fetched from the Materials Project. This is a STARTING GUESS, NOT the equilibrium geometry — the cell and atomic positions are generally NOT relaxed.
+    - Therefore the FIRST subproblem MUST ALWAYS be a `pw_vc_relax` that relaxes BOTH the cell and the atomic positions to obtain the equilibrium structure. Do this even when the query does not explicitly mention relaxation, and even if a lattice constant is mentioned.
+    - All subsequent subproblems MUST take the RELAXED structure produced by the vc_relax step as their starting structure — never the raw initial structure.
+    - Only exception: if the user EXPLICITLY asks to skip relaxation or to use a fixed/given geometry as-is, you may start directly from the provided structure.
 
     <|user|>
     You are a senior Quantum ESPRESSO planner.
 
-    ### In-Context Example 1 (band structure with given lattice constant)
-    Query: Calculate the band structure of silicon in the diamond structure (a0 = 5.43 Å).
+    ### In-Context Example (shows the required OUTPUT FORMAT only —
+    ### do not treat its step sequence as a template for other queries)
+    Query: Calculate the total energy of fcc aluminium.
 
     <subproblem1>
-    Problem: Do an SCF calculation to converge charge density
-    Tool: pw_scf
-    Required input: diamond Si structure
-    Why: Establish the self-consistent charge density required by the band calculation
+    Problem: Relax the cell and atomic positions to obtain the equilibrium structure
+    Tool: pw_vc_relax
+    Required input: initial fcc Al structure
+    Why: Obtain the equilibrium geometry required for the requested total energy
     </subproblem1>
 
     <subproblem2>
-    Problem: Perform NSCF calculation along the high-symmetry path
-    Tool: pw_nscf
-    Required input: same structure, SCF charge density
-    Why: Evaluate eigenvalues on the requested high-symmetry path using the converged charge density
+    Problem: Do an SCF calculation to obtain the converged total energy
+    Tool: pw_scf
+    Required input: relaxed structure from the vc_relax step
+    Why: Calculate the requested total energy on the equilibrium structure
     </subproblem2>
-
-    <subproblem3>
-    Problem: Post-process bands to obtain band structure
-    Tool: bands_post
-    Required input: NSCF results
-    Why: Convert the band calculation output into the requested band-structure result
-    </subproblem3>
-
-    ---
-
-    ### In-Context Example 2 (equilibrium lattice constant unknown)
-    Query: Calculate the equilibrium lattice constant of Na in the BCC structure.
-
-    <subproblem1>
-    Problem: Find equilibrium lattice constant by relaxing the cell volume and atomic positions
-    Tool: pw_vc_relax
-    Required input: BCC Na structure
-    Why: Determine the equilibrium cell and atomic coordinates requested by the user
-    </subproblem1>
     ---
 
     ### Now handle this query:
     Query: {question}
 
-    - Do NOT include reasoning, explanations, or justification. 
+    Plan the scientifically correct workflow for THIS query — do not pattern-match
+    on the example above.
+
+    - Do NOT include reasoning, explanations, or justification.
     - The output must ONLY be <subproblemN>...</subproblemN> blocks, nothing else.
 
     <|assistant|>
     """
 }
 
-# planner_messages_backup = {
-#     "role": "user",
-#     "content": """
-#     <|system|>
-#     You are a strict planning assistant for Quantum ESPRESSO ({tool}).
+# Variant used when force_vc_relax is OFF: the planner decides whether to relax
+# based on the query (e.g. given lattice constant -> straight to SCF; unknown
+# equilibrium -> relax first).
+planner_messages_no_force = {
+    "role": "user",
+    "content": """
+    <|system|>
+    You are a strict planning assistant for Quantum ESPRESSO ({tool}).
+""" + _OUTPUT_RULES + """
+    Structure rule:
+    - If key structural information (e.g., the equilibrium lattice constant) is already provided or known, you may go straight to the property calculation (e.g. pw_scf).
+    - If the equilibrium geometry is unknown or uncertain, relax it first with pw_vc_relax and use the relaxed structure downstream.
 
-#     Output requirements:
-#     - Decompose the user query into 1..N subproblems.
-#     - Each subproblem must be wrapped as <subproblem1>...</subproblem1>, <subproblem2>...</subproblem2>, etc. (in order).
-# 	- Each subproblem must contain four fields:
-# 	Problem: What to calculate
-# 	Tool: Tool to use
-# 	Required input: Required input parameters
-# 	Sweep parameters: (if none, write "Sweep: none")
-#     These fields MUST appear on separate lines, each separated by a newline; otherwise, the output is considered incorrect.
-#     - Keep each subproblem short (2-3 lines).
-#     - Do not output anything outside <subproblem> blocks.
+    <|user|>
+    You are a senior Quantum ESPRESSO planner.
 
-#     Core rules:
-#     1) If key structural information (e.g., lattice constant) is already provided, do NOT add a sweep.  
-#     2) If key information is missing or uncertain, solve it by sweeping the parameter (use as few points as possible, e.g. 3-5).  
-#     3) Allowed tools: pw_scf, pw_nscf, pw_relax, pw_vc_relax, pw_bands, bands_post, dos_post, projwfc_post, pp_post, q2r_post, matdyn_post.
+    ### In-Context Example (shows the required OUTPUT FORMAT only —
+    ### do not treat its step sequence as a template for other queries)
+    Query: Calculate the total energy of fcc aluminium (a0 = 4.05 Å).
 
-#     <|user|>
-#     You are a senior Quantum ESPRESSO planner.
+    <subproblem1>
+    Problem: Do an SCF calculation to obtain the converged total energy
+    Tool: pw_scf
+    Required input: fcc Al structure
+    Why: Calculate the requested total energy using the supplied fixed geometry
+    </subproblem1>
+    ---
 
-#     ### In-Context Example 1 (band structure with given lattice constant)
-#     Query: Calculate the band structure of silicon in the diamond structure (a0 = 5.43 Å).
+    ### Now handle this query:
+    Query: {question}
 
-#     <subproblem1>
-#     Problem: Do an SCF calculation to converge charge density
-#     Tool: pw_scf
-#     Required input: diamond Si structure, a0=5.43
-#     Sweep: none
-#     </subproblem1>
+    Plan the scientifically correct workflow for THIS query — do not pattern-match
+    on the example above.
 
-#     <subproblem2>
-#     Problem: Perform NSCF calculation along the high-symmetry path
-#     Tool: pw_nscf
-#     Required input: same structure, SCF charge density
-#     Sweep: none
-#     </subproblem2>
+    - Do NOT include reasoning, explanations, or justification.
+    - The output must ONLY be <subproblemN>...</subproblemN> blocks, nothing else.
 
-#     <subproblem3>
-#     Problem: Post-process bands to obtain band structure
-#     Tool: bands_post
-#     Required input: NSCF results
-#     Sweep: none
-#     </subproblem3>
+    <|assistant|>
+    """
+}
 
-#     ---
 
-#     ### In-Context Example 2 (equilibrium lattice constant unknown)
-#     Query: Calculate the equilibrium lattice constant of Na in the BCC structure.
+# Assistant mode: the user reviewed the plan and asked for a change in natural
+# language. Re-emit the WHOLE plan (the suggestion may add, drop, reorder or
+# retarget steps — we deliberately don't try to localise it to one subproblem).
+plan_refine_messages = {
+    "role": "user",
+    "content": """
+    <|system|>
+    You are a strict planning assistant for Quantum ESPRESSO ({tool}).
+    You are REVISING an existing plan according to a user's instruction.
+""" + _OUTPUT_RULES + """
+    Revision rules:
+    - Apply the user's instruction faithfully. It may target one step or the whole plan.
+    - Keep every part of the original plan that the instruction does not ask to change,
+      including wording.
+    - Renumber the subproblems consecutively from 1 after any insertion or removal.
+    - If the instruction would produce a workflow that cannot run (a step whose
+      prerequisites no earlier step produces), fix that while still honouring the intent.
 
-#     <subproblem1>
-#     Problem: Find equilibrium lattice constant by relaxing the cell volume and atomic positions
-#     Tool: pw_vc_relax
-#     Required input: BCC Na structure
-#     Sweep: none
-#     Output: equilibrium lattice constant (Å)
-#     </subproblem1>
-#     ---
+    <|user|>
+    ### Original query
+    {question}
 
-#     ### Now handle this query:
-#     Query: {question}
+    ### Current plan
+    {current_plan}
 
-#     - Do NOT include reasoning, explanations, or justification. 
-#     - The output must ONLY be <subproblemN>...</subproblemN> blocks, nothing else.
+    ### The user's requested change
+    {suggestion}
 
-#     <|assistant|>
-#     """
-# }
+    Re-emit the COMPLETE revised plan.
+    - Do NOT include reasoning, explanations, or justification.
+    - The output must ONLY be <subproblemN>...</subproblemN> blocks, nothing else.
 
-#, bands_post, dos_post, projwfc_post, pp_post, q2r_post, matdyn_post.
-# We removed post processing for benchmarking.
+    <|assistant|>
+    """
+}

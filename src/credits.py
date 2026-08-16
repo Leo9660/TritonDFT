@@ -43,10 +43,18 @@ DEFAULT_MODEL = "gpt-4o"
 # + output) so we never undercharge for something we don't recognize.
 _FALLBACK_PRICE = (2.50, 10.00)
 
+# Encoding init must NEVER crash module import: tiktoken downloads the BPE file
+# from openaipublic.blob.core.windows.net on first use, and workers may have no
+# egress / flaky DNS to that host. The image pre-caches both encodings (see
+# TIKTOKEN_CACHE_DIR in the Dockerfile); if even that is missing we degrade to
+# the len//4 heuristic in count_tokens() rather than killing the worker.
 try:
     _ENC = tiktoken.encoding_for_model("gpt-4o")
 except Exception:
-    _ENC = tiktoken.get_encoding("cl100k_base")
+    try:
+        _ENC = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        _ENC = None
 
 
 def resolve_model(model):

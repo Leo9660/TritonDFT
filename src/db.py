@@ -77,8 +77,23 @@ class Job(Base):
     __tablename__ = "jobs"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    # queued | running | done | failed | timeout | cancelled
+    # queued | running | awaiting_plan | awaiting_approval | done | failed | timeout | cancelled
     status = Column(String, default="queued", nullable=False)
+    # auto = run end-to-end; assistant = pause for human review before each step's
+    # script is executed (human-in-the-loop).
+    mode = Column(String, default="auto", nullable=False)
+    # When status=awaiting_approval: the step + generated scripts awaiting review.
+    pending_step = Column(JSON)
+    # The user's decision for the pending step; the worker's gate consumes it.
+    step_action = Column(JSON)
+    # The agent's decomposition into subproblems, as structured fields. Written
+    # in BOTH modes so the UI can render real plan cards instead of scraping the
+    # raw <subproblem> blocks out of the stdout blob.
+    plan = Column(JSON)
+    # When status=awaiting_plan: the plan awaiting the user's review/edits.
+    pending_plan = Column(JSON)
+    # The user's decision for the pending plan; the worker's plan gate consumes it.
+    plan_action = Column(JSON)
     query = Column(Text, nullable=False)
     output = Column(Text, default="", nullable=False)
     error = Column(Text)
@@ -118,6 +133,12 @@ def _run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS result JSON",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS model TEXT",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script_only BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'auto'",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pending_step JSON",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS step_action JSON",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS plan JSON",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pending_plan JSON",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS plan_action JSON",
         "ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS model TEXT",
     ]
     with engine.begin() as conn:
