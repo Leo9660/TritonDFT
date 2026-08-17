@@ -84,8 +84,11 @@ def _render_from_example(
     time_limit: str,
 ) -> str:
     lines = template_text.splitlines()
+    command_line = _preserve_template_launcher(lines, command_line)
     lines = _replace_or_add_sbatch(lines, ["--nodes"], str(nodes))
     lines = _replace_or_add_sbatch(lines, ["--tasks-per-node"], str(tasks_per_node))
+    if any(re.match(r"^\s*#SBATCH\s+--ntasks(?:=|\s+)", line) for line in lines):
+        lines = _replace_or_add_sbatch(lines, ["--ntasks"], str(nodes * tasks_per_node))
     lines = _replace_or_add_sbatch(lines, ["-t", "--time"], time_limit, preferred="-t")
     lines = _replace_or_add_sbatch(lines, ["-o", "--output"], os.path.join(work_dir, "qe.out"), preferred="-o")
     lines = _replace_or_add_sbatch(lines, ["-e", "--error"], os.path.join(work_dir, "qe.err"), preferred="-e")
@@ -100,6 +103,33 @@ def _render_from_example(
         command_line,
     ]
     return "\n".join(lines + block).strip()
+
+
+def _preserve_template_launcher(lines: list[str], command_line: str) -> str:
+    """Keep the site's active srun/mpirun launcher while replacing its rank count."""
+    active = next(
+        (line.strip() for line in lines
+         if not line.lstrip().startswith("#") and re.match(r"^\s*(?:srun|mpirun|mpiexec)\b", line, re.I)),
+        "",
+    )
+    if not active:
+        return command_line
+    template_family = re.match(r"^(srun|mpirun|mpiexec)\b", active, re.I).group(1).lower()
+    generated_family = re.search(r"(?:^|[;|]\s*)(srun|mpirun|mpiexec)\b", command_line, re.I)
+    if not generated_family or generated_family.group(1).lower() == template_family:
+        return command_line
+    rank_match = re.search(r"(?:^|\s)(?:-np|-n|--ntasks(?:=|\s+))\s*(\d+)", command_line)
+    ranks = rank_match.group(1) if rank_match else "1"
+    executable = re.search(r"\$exe\b.*$", command_line, re.I)
+    if not executable:
+        return command_line
+    # Preserve site-specific launcher options such as --mpi=pmix, but replace
+    # any stale rank option and everything after $exe from the template.
+    template_prefix = active[:active.lower().find("$exe")].strip() if "$exe" in active.lower() else template_family
+    template_prefix = re.sub(r"\s+(?:-np|-n)\s+\d+", "", template_prefix, flags=re.I)
+    template_prefix = re.sub(r"\s+--ntasks(?:=|\s+)\d+", "", template_prefix, flags=re.I)
+    rank_option = "-n" if template_family == "srun" else "-np"
+    return f"{template_prefix} {rank_option} {ranks} {executable.group(0)}"
 
 
 def _replace_or_add_sbatch(

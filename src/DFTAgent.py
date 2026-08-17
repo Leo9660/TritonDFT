@@ -19,7 +19,7 @@ parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, e
 validate_pseudos_exist, package_pseudos_for_remote, read_qe_cutoffs
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
-from validation import validate_qe_input
+from validation import remove_undocumented_namelist_keywords, validate_qe_input
 
 
 def _generate_nonempty_text(
@@ -818,6 +818,16 @@ User request:
             # Treat generated text as a proposal. Deterministic validation
             # catches syntax/card/mode errors and feeds exact repair guidance
             # back to the same model before any input reaches approval.
+            deterministic_repairs = []
+            for path in input_paths:
+                deterministic_repairs.extend(
+                    remove_undocumented_namelist_keywords(path, fn_spec.exec)
+                )
+            if deterministic_repairs and self.verbose:
+                print(
+                    "[solve_sub_problem][deterministic-repair] "
+                    + "; ".join(deterministic_repairs)
+                )
             validation_issues = []
             for path in input_paths:
                 validation_issues.extend(

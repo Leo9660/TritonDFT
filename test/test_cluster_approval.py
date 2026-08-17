@@ -30,9 +30,17 @@ from cluster_agent import (
     _force_ph_fresh_start,
     _normalize_namelist_final_commas,
     _plan_text,
+    _pw_pseudo_dirs_for_work_dir,
+    _may_clone_parent_qe_state,
+    _workflow_graph_text,
+    _discover_workflows,
+    _resolve_workflow_to_open,
+    _parse_resume_command,
+    _required_parent_artifacts,
 )
 from execute_code.slurm import SlurmLauncher
 from execute_code.slurm import _create_probe_script, _ensure_parameter, _enforce_safe_qe_parallel_flags
+from execute_code.slurm_template import render_slurm_script
 from DFTAgent import DFTAgent, _generate_nonempty_text
 from workflow_state import WorkflowCheckpoint, create_checkpoint
 
@@ -79,6 +87,70 @@ JOB DONE.
 
 
 class PlaceholderTests(unittest.TestCase):
+    def test_resume_prompt_parses_fresh_start_step(self):
+        self.assertEqual(_parse_resume_command("resume 1 --fresh-start-step 6"), ("1", 6))
+        self.assertEqual(_parse_resume_command("resume latest"), ("latest", None))
+
+    def test_merced_template_preserves_srun_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "merced.sh"
+            template.write_text(
+                "#!/bin/bash\n#SBATCH --partition=medium\n#SBATCH --nodes=1\n"
+                "#SBATCH --tasks-per-node=16\nmodule load quantum-espresso\n"
+                "srun --mpi=pmix -n 1 $exe -in $INPUT > $OUTPUT\n",
+                encoding="utf-8",
+            )
+            rendered = render_slurm_script(
+                exec_path="pw.x", input_path="scf.in", output_path="scf.out",
+                command_line="export OMP_NUM_THREADS=1; mpirun --allow-run-as-root -np 16 $exe -nk 4 -in $INPUT > $OUTPUT",
+                nodes=1, tasks_per_node=16, work_dir=".", time_limit="01:00:00",
+                template_path=str(template),
+            )
+            self.assertIn("srun --mpi=pmix -n 16 $exe -nk 4 -in $INPUT > $OUTPUT", rendered)
+            self.assertNotIn("mpirun", rendered)
+            self.assertIn("#SBATCH --partition=medium", rendered)
+
+    def test_template_ntasks_tracks_nodes_times_tasks_per_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "merced.sh"
+            template.write_text(
+                "#!/bin/bash\n#SBATCH --nodes=1\n#SBATCH --tasks-per-node=16\n"
+                "#SBATCH --ntasks=16\nsrun -n 16 $exe -in $INPUT > $OUTPUT\n",
+                encoding="utf-8",
+            )
+            rendered = render_slurm_script(
+                exec_path="pw.x", input_path="scf.in", output_path="scf.out",
+                command_line="mpirun -np 48 $exe -in $INPUT > $OUTPUT",
+                nodes=2, tasks_per_node=24, work_dir=".", time_limit="01:00:00",
+                template_path=str(template),
+            )
+            self.assertIn("#SBATCH --ntasks=48", rendered)
+            self.assertIn("srun -n 48", rendered)
+
+    def test_slurm_resource_plan_is_clamped_to_user_allocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "scf.in"
+            source.write_text(PW_INPUT, encoding="utf-8")
+
+            class Generator:
+                def __call__(self, *_args, **_kwargs):
+                    return [{"generated_text": (
+                        "Analysis: large calculation\n"
+                        "Command: mpirun -np 200 $exe -in $INPUT > $OUTPUT\n"
+                        'Slurm: {"nodes": 4, "tasks_per_node": 128, "time_limit": "01:00:00"}'
+                    )}]
+
+            launcher = SlurmLauncher(generator=Generator(), max_new_tokens=100)
+            launcher.set_resource_limits(2, 24)
+            plan = launcher._generate_slurm_auto_parallel_plan(
+                exec_name="pw.x", qe_prefix="", input_path=str(source), input_name="scf.in",
+                output_name="scf.out", parallel_np=48, hardware_description=None,
+            )
+            self.assertEqual(plan["nodes"], 2)
+            self.assertEqual(plan["tasks_per_node"], 24)
+            self.assertEqual(plan["mpi_ranks"], 48)
+            self.assertIn("-np 48", plan["command_line"])
+
     def test_ph_probe_inserts_fortran_namelist_parameter_with_comma(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "phonon.in"
@@ -448,6 +520,86 @@ class _TestRemoteAgent(RemoteClusterDFTAgent):
 
 
 class ApprovalWorkflowTests(unittest.TestCase):
+    def test_workflow_browser_discovers_and_resolves_latest_and_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            older = root / "2026-08-16" / "older_run"
+            newer = root / "2026-08-17" / "newer_run"
+            older.mkdir(parents=True)
+            newer.mkdir(parents=True)
+            (older / "workflow_state.json").write_text(json.dumps({
+                "status": "completed", "updated_at": "2026-08-16T12:00:00+00:00",
+                "query": "older calculation",
+            }))
+            (newer / "workflow_state.json").write_text(json.dumps({
+                "status": "awaiting_user", "updated_at": "2026-08-17T12:00:00+00:00",
+                "query": "newer calculation",
+            }))
+            workflows = _discover_workflows(root)
+            self.assertEqual([item["name"] for item in workflows], ["newer_run", "older_run"])
+            self.assertEqual(_resolve_workflow_to_open("latest", root), str(newer.resolve()))
+            self.assertEqual(_resolve_workflow_to_open("2", root), str(older.resolve()))
+            self.assertEqual(_resolve_workflow_to_open(str(older), root), str(older.resolve()))
+
+    def test_scalar_save_state_is_not_cloned_into_soc_scf(self):
+        parent = types.SimpleNamespace(id=1, tool="pw_vc_relax", branch="core")
+        child = types.SimpleNamespace(id=2, tool="pw_scf", branch="soc_refinement")
+        plan = [
+            {"id": 1, "tool": "pw_vc_relax"},
+            {"id": 2, "tool": "pw_scf"},
+        ]
+        packages = [
+            {"exec_name": "pw.x", "pseudo_dir": "/pseudo/PBE_SR"},
+            {"exec_name": "pw.x", "pseudo_dir": "/pseudo/PBE_FR"},
+        ]
+        self.assertFalse(_may_clone_parent_qe_state(parent, child, plan, packages))
+
+    def test_soc_save_state_is_cloned_into_dependent_soc_bands(self):
+        parent = types.SimpleNamespace(id=2, tool="pw_scf", branch="soc_refinement")
+        child = types.SimpleNamespace(id=3, tool="pw_bands", branch="soc_refinement")
+        plan = [{"id": 2, "tool": "pw_scf"}, {"id": 3, "tool": "pw_bands"}]
+        packages = [
+            {"exec_name": "pw.x", "pseudo_dir": "/pseudo/PBE_FR"},
+            {"exec_name": "pw.x", "pseudo_dir": "/pseudo/PBE_FR"},
+        ]
+        self.assertTrue(_may_clone_parent_qe_state(parent, child, plan, packages))
+
+    def test_postprocessors_do_not_create_false_pseudo_library_conflicts(self):
+        packages = [
+            {"work_dir": "/run/soc", "exec_name": "pw.x", "pseudo_dir": "/pseudo/PBE_FR"},
+            {"work_dir": "/run/soc", "exec_name": "bands.x", "pseudo_dir": "/pseudo/PBE"},
+            {"work_dir": "/run/soc", "exec_name": "dos.x", "pseudo_dir": "/pseudo/PBE"},
+        ]
+        self.assertEqual(
+            _pw_pseudo_dirs_for_work_dir(packages, "/run/soc", "/fallback"),
+            {"/pseudo/PBE_FR"},
+        )
+
+    def test_workflow_graph_shows_parallel_electronic_branches(self):
+        steps = [
+            {"id": 1, "tool": "pw_vc_relax", "problem": "Scalar-relativistic vc-relax"},
+            {"id": 2, "tool": "pw_scf", "problem": "Fully relativistic SOC SCF"},
+            {"id": 3, "tool": "pw_bands", "problem": "SOC bands"},
+            {"id": 4, "tool": "bands_post", "problem": "Postprocess SOC bands"},
+            {"id": 5, "tool": "pw_nscf", "problem": "SOC dense-grid NSCF"},
+            {"id": 6, "tool": "dos_post", "problem": "SOC total DOS"},
+        ]
+        graph = _workflow_graph_text(steps)
+        self.assertIn("[1] pw_vc_relax", graph)
+        self.assertIn("├── ○ [3] pw_bands", graph)
+        self.assertIn("└── ○ [5] pw_nscf", graph)
+        self.assertIn("Parallel opportunity", graph)
+        self.assertIn("step(s) 2", graph)
+
+    def test_workflow_graph_can_render_execution_states(self):
+        steps = [
+            {"id": 1, "tool": "pw_scf", "problem": "SCF"},
+            {"id": 2, "tool": "pw_nscf", "problem": "Dense NSCF"},
+        ]
+        graph = _workflow_graph_text(steps, {1: "completed", 2: "running"})
+        self.assertIn("✓ [1]", graph)
+        self.assertIn("● [2]", graph)
+
     def test_approval_decision_supports_revision_and_legacy_callbacks(self):
         self.assertEqual(_approval_result(True), ("approve", ""))
         self.assertEqual(_approval_result(False), ("cancel", ""))
@@ -548,6 +700,32 @@ class ApprovalWorkflowTests(unittest.TestCase):
         self.assertIn("tritondft_workflow.save", command)
         self.assertIn("tritondft_workflow.xml", command)
         self.assertNotIn("cp -a /remote/run/branches/core/. ", command)
+
+    def test_dynmat_declares_gamma_dynamical_matrix_as_parent_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "raman-analysis.in"
+            path.write_text(
+                "&input\n fildyn='tritondft_workflow.dynG',\n asr='simple',\n/\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _required_parent_artifacts(
+                    {"tool": "dynmat_post"}, [str(path)]
+                ),
+                ["tritondft_workflow.dynG"],
+            )
+
+    def test_remote_artifact_copy_checks_and_copies_dynmat_input(self):
+        transport = SSHClusterTransport("expanse", "/remote", verbose=False)
+        with patch("cluster_agent._run_interactive") as runner:
+            transport.copy_remote_artifacts(
+                "/remote/run/03-phonon", "/remote/run/04-dynmat",
+                ["tritondft_workflow.dynG"],
+            )
+        command = runner.call_args.args[0]
+        self.assertIn("Missing required workflow artifact", command)
+        self.assertIn("tritondft_workflow.dynG", command)
+        self.assertIn("cp -a", command)
 
     def test_all_inputs_are_generated_and_approved_before_connection(self):
         with tempfile.TemporaryDirectory() as tmp:
