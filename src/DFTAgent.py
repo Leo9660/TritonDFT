@@ -267,8 +267,28 @@ class DFTAgent:
         if self.verbose:
             print(f"[info_query] API call snippet received: {api_call_snippet_out}")
 
-        fetch_result = fetch_material_info_from_api_snippet(api_call_snippet_out, limit=25, verbose=self.verbose)
-    
+        # The Materials Project query is the very first thing a run does, and it is
+        # an external service: a transient 5xx there killed a whole job before a
+        # single step had executed. The query is an idempotent read, so retry it
+        # with a short backoff rather than losing the run.
+        fetch_result = None
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                fetch_result = fetch_material_info_from_api_snippet(
+                    api_call_snippet_out, limit=25, verbose=self.verbose)
+                break
+            except Exception as e:
+                last_err = e
+                print(f"[info_query][warn] Materials Project query failed "
+                      f"(attempt {attempt}/3): {e}")
+                if attempt < 3:
+                    time.sleep(3 * attempt)
+        if fetch_result is None:
+            raise RuntimeError(
+                f"Could not reach the Materials Project after 3 attempts: {last_err}")
+
+
         if self.output_log:
             output_to_log_file(self.work_dir_root, self.output_log_file, f"[info_query] Retrieved material information: {fetch_result.get('material_ids', ['N/A'])[0]}")
 
