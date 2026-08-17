@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from sqlalchemy import text
 from db import SessionLocal, Job, init_db
 from credits import count_tokens, reconcile
-from artifacts import extract_result
+from artifacts import extract_result, cleanup_scratch
 from DFTAgent import DFTAgent, JobCancelled
 
 WORKER_ID = os.environ.get("HOSTNAME", socket.gethostname())
@@ -505,6 +505,13 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
             run_dir = str(wd)
             result = extract_result(wd)
             log(f"job {job_id} artifacts: run_dir={run_dir} result={result}")
+            # Drop the QE binary intermediates now that everything the user can
+            # see has been extracted. They are regenerable, never served, and on
+            # a shared PVC they only accumulate — a phonon run's _ph0 alone can
+            # be tens of GB.
+            freed = cleanup_scratch(wd)
+            if freed:
+                log(f"job {job_id} scratch cleaned: {freed / 1048576:.0f} MB freed")
     except Exception as e:
         log(f"artifact capture failed for {job_id}: {e}")
 
