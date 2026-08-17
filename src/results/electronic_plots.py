@@ -5,6 +5,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+from .electronic_reference import electronic_reference
+
 
 def _numeric_rows(path: Path) -> List[List[float]]:
     rows: List[List[float]] = []
@@ -66,13 +68,13 @@ def _plot_bands(run_dir: Path, plt) -> str:
         blocks.append(block)
     if not blocks:
         return ""
-    reference = _energy_reference(run_dir)
+    reference = electronic_reference(run_dir, "vbm")
     fig, ax = plt.subplots(figsize=(6.4, 5.0))
     for band in blocks:
         ax.plot([p[0] for p in band], [p[1] - reference for p in band], color="black", linewidth=0.9)
     ax.axhline(0.0, color="tab:red", linestyle="--", linewidth=0.8)
     ax.set_xlabel("k-path distance")
-    ax.set_ylabel("Energy (eV)")
+    ax.set_ylabel("Energy - VBM (eV)")
     ax.set_title("Electronic band structure")
     fig.tight_layout()
     output = run_dir / "band_structure.png"
@@ -93,7 +95,7 @@ def _plot_total_dos(run_dir: Path, plt) -> str:
         return ""
     ncol = min(len(row) for row in rows)
     fig, ax = plt.subplots(figsize=(5.8, 5.0))
-    reference = _energy_reference(run_dir)
+    reference = electronic_reference(run_dir, "vbm")
     energy = [row[0] - reference for row in rows]
     if ncol >= 4:  # spin-polarized dos.x: E, DOSup, DOSdown, IntDOS
         ax.plot(energy, [row[1] for row in rows], label="spin up")
@@ -102,7 +104,7 @@ def _plot_total_dos(run_dir: Path, plt) -> str:
     else:
         ax.plot(energy, [row[1] for row in rows], color="black", label="total DOS")
     ax.axvline(0.0, color="tab:red", linestyle="--", linewidth=0.8)
-    ax.set_xlabel("Energy (eV)")
+    ax.set_xlabel("Energy - VBM (eV)")
     ax.set_ylabel("DOS (states/eV)")
     ax.set_title("Total density of states")
     fig.tight_layout()
@@ -136,7 +138,7 @@ def _plot_pdos(run_dir: Path, plt) -> str:
         length = min(len(rows) for rows in datasets)
         if not length:
             continue
-        reference = _energy_reference(run_dir)
+        reference = electronic_reference(run_dir, "vbm")
         energy = [datasets[0][i][0] - reference for i in range(length)]
         ncol = min(len(row) for rows in datasets for row in rows[:length])
         up = [sum(rows[i][1] for rows in datasets) for i in range(length)]

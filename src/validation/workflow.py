@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
@@ -90,7 +91,18 @@ def validate_plan(query: str, steps: Sequence[Dict[str, Any]]) -> List[Validatio
                 "error", "OPTIONAL_STEP_IN_EXECUTABLE_PLAN",
                 f"Step {index} is optional; alternatives belong in approval questions, not the executable plan.",
             ))
-        if re.search(r"\bconverg(?:e|ence|ing).*?(?:cutoff|k[- ]?point|sampling)|(?:cutoff|k[- ]?point).*?converg", description, re.I) and not _requested(
+        # Only an explicit calculation action in the step title constitutes a
+        # convergence study. Required-input phrases such as "converged cutoffs"
+        # describe production parameters and must not turn vc-relax into a
+        # phantom convergence workflow.
+        problem = str(step.get("problem") or "")
+        convergence_action = re.search(
+            r"\b(?:test|study|sweep|converge|optimi[sz]e|determine)\b.{0,50}"
+            r"(?:cutoffs?|k[- ]?points?|sampling)",
+            problem,
+            re.I,
+        )
+        if convergence_action and not _requested(
             query, r"convergence (?:test|study)|converge (?:the )?(?:cutoff|k[- ]?point)|cutoff convergence|k[- ]?point convergence"
         ):
             issues.append(ValidationIssue(
@@ -98,9 +110,17 @@ def validate_plan(query: str, steps: Sequence[Dict[str, Any]]) -> List[Validatio
                 f"Step {index} adds a convergence study that the user did not request.",
             ))
 
-    scf_count = tools.count("pw_scf")
+    scf_steps = [step for step in steps if step.get("tool") == "pw_scf"]
+    scf_count = len(scf_steps)
     explicit_comparison = _requested(query, r"compare.*(?:soc|scalar)|(?:soc|scalar).*comparison|with and without soc")
-    if scf_count > 1 and not explicit_comparison:
+    scf_descriptions = [
+        " ".join(str(step.get(key) or "") for key in ("problem", "input", "why"))
+        for step in scf_steps
+    ]
+    has_soc_scf = any(re.search(r"\bSOC\b|fully[- ]relativistic|lspinorb", text, re.I) for text in scf_descriptions)
+    has_scalar_scf = any(re.search(r"scalar[- ]relativistic|without\s+SOC|SOC\s+(?:off|disabled)", text, re.I) for text in scf_descriptions)
+    distinct_scalar_soc_branches = has_soc_scf and has_scalar_scf
+    if scf_count > 1 and not explicit_comparison and not distinct_scalar_soc_branches:
         issues.append(ValidationIssue(
             "error", "DUPLICATE_SCF_WORKFLOWS",
             "The plan contains multiple SCF workflows without an explicit scalar-versus-SOC comparison request.",
@@ -314,6 +334,16 @@ def validate_qe_input(path: str, *, tool: str = "", query: str = "") -> List[Val
         for key in ("prefix", "outdir", "fildos"):
             if not _value(body, key):
                 add("fatal", "DOS_KEY_MISSING", f"dos.x input is missing {key}.")
+        try:
+            emin = float(_value(body, "emin").replace("d", "e").replace("D", "e"))
+            emax = float(_value(body, "emax").replace("d", "e").replace("D", "e"))
+        except ValueError:
+            emin = emax = None
+        if emin is not None and emax is not None:
+            if emax <= emin:
+                add("fatal", "DOS_ENERGY_RANGE_INVALID", "DOS Emax must be greater than Emin.")
+            elif emax - emin < 5.0:
+                add("error", "DOS_ENERGY_WINDOW_TOO_NARROW", f"The DOS window is only {emax - emin:.3g} eV; use at least 5 eV for a full DOS unless a narrow interval was explicitly requested.")
 
     elif exec_name == "projwfc.x":
         body = _namelist(text, "projwfc")
@@ -451,6 +481,117 @@ def inherit_shared_pw_settings(packages: Sequence[Dict[str, Any]]) -> None:
         Path(path).write_text(text.rstrip() + "\n", encoding="utf-8")
 
 
+def inherit_vdw_model(packages: Sequence[Dict[str, Any]]) -> None:
+    """Carry the complete relaxation vdW model into every later pw.x input.
+
+    This contract is independent of pseudopotential relativity: an SOC branch
+    must switch to fully relativistic UPFs and enable SOC, but it must not
+    silently drop or change the approved D3/vdW prescription. Only vdW keys are
+    copied here so scalar species, spin, and SOC settings never cross branches.
+    """
+    pw_paths = [
+        package["input_paths"][0]
+        for package in packages
+        if package.get("exec_name") == "pw.x" and package.get("input_paths")
+    ]
+    if len(pw_paths) < 2:
+        return
+    baseline = Path(pw_paths[0]).read_text(encoding="utf-8", errors="replace")
+    system = _namelist(baseline, "system")
+    source_lines: Dict[str, str] = {}
+    for match in re.finditer(
+        r"(?mi)^\s*((?:vdw_corr|london|dftd3_[a-z0-9_]+|ts_vdw_[a-z0-9_]+|xdm_[a-z0-9_]+))\s*=\s*[^\n]+$",
+        system,
+    ):
+        source_lines[match.group(1).lower()] = match.group(0).strip()
+    if not source_lines:
+        return
+    for path in pw_paths[1:]:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        for key, line in source_lines.items():
+            text = _set_system_line(text, key, line)
+        Path(path).write_text(text.rstrip() + "\n", encoding="utf-8")
+
+
+def _upf_valence(path: Path) -> float | None:
+    if not path.is_file():
+        return None
+    header = path.read_text(encoding="utf-8", errors="replace")[:30000]
+    match = re.search(r"(?i)z_valence\s*=\s*['\"]?\s*([-+0-9.EeDd]+)", header)
+    return float(match.group(1).replace("d", "e").replace("D", "E")) if match else None
+
+
+def _electron_count_from_input(path: Path, text: str) -> float | None:
+    _, species_rows = _card_rows(text, "ATOMIC_SPECIES")
+    _, position_rows = _card_rows(text, "ATOMIC_POSITIONS")
+    pseudo_dir_value = _value(_namelist(text, "control"), "pseudo_dir")
+    pseudo_dir = Path(pseudo_dir_value).expanduser() if pseudo_dir_value else path.parent / "pseudos"
+    if not pseudo_dir.is_absolute():
+        pseudo_dir = (path.parent / pseudo_dir).resolve()
+    valences: Dict[str, float] = {}
+    for row in species_rows:
+        tokens = row.split()
+        if len(tokens) < 3:
+            continue
+        value = _upf_valence(pseudo_dir / tokens[2])
+        if value is None:
+            return None
+        valences[tokens[0]] = value
+    if not valences or not position_rows:
+        return None
+    counts: Dict[str, int] = {}
+    for row in position_rows:
+        tokens = row.split()
+        if len(tokens) >= 4 and tokens[0] in valences:
+            counts[tokens[0]] = counts.get(tokens[0], 0) + 1
+    if not counts:
+        return None
+    total_charge_raw = _value(_namelist(text, "system"), "tot_charge") or "0"
+    try:
+        total_charge = float(total_charge_raw.replace("d", "e").replace("D", "E"))
+    except ValueError:
+        total_charge = 0.0
+    return sum(valences[label] * count for label, count in counts.items()) - total_charge
+
+
+def recommended_nbnd(path: str | Path, *, extra_bands: int = 16) -> int | None:
+    """Occupancy-aware safe band count derived from the selected UPFs."""
+    input_path = Path(path)
+    text = input_path.read_text(encoding="utf-8", errors="replace")
+    electrons = _electron_count_from_input(input_path, text)
+    if electrons is None:
+        return None
+    system = _namelist(text, "system")
+    noncollinear = _value(system, "noncolin").lower() in {".true.", "true", "t"}
+    spin_orbit = _value(system, "lspinorb").lower() in {".true.", "true", "t"}
+    occupied = math.ceil(electrons if (noncollinear or spin_orbit) else electrons / 2.0)
+    return occupied + extra_bands
+
+
+def harmonize_nbnd(packages: Sequence[Dict[str, Any]], *, extra_bands: int = 16) -> None:
+    """Raise bands/NSCF nbnd to a safe occupied-plus-empty-state minimum."""
+    for package in packages:
+        if package.get("exec_name") != "pw.x":
+            continue
+        for raw_path in package.get("input_paths", []):
+            path = Path(raw_path)
+            text = path.read_text(encoding="utf-8", errors="replace")
+            calculation = _value(_namelist(text, "control"), "calculation").lower()
+            if calculation not in {"bands", "nscf"}:
+                continue
+            minimum = recommended_nbnd(path, extra_bands=extra_bands)
+            if minimum is None:
+                continue
+            current_raw = _value(_namelist(text, "system"), "nbnd")
+            try:
+                current = int(float(current_raw)) if current_raw else 0
+            except ValueError:
+                current = 0
+            if current < minimum:
+                text = _set_system_line(text, "nbnd", f"nbnd={minimum}")
+                path.write_text(text.rstrip() + "\n", encoding="utf-8")
+
+
 def harmonize_dos_integration(
     steps: Sequence[Dict[str, Any]],
     packages: Sequence[Dict[str, Any]],
@@ -497,6 +638,61 @@ def harmonize_dos_integration(
             # ambiguous and has repeatedly caused regeneration drift.
             body = re.sub(r"(?mi)^\s*(?:ngauss|degauss)\s*=\s*[^\n]+\n?", "", body)
         text = text[:dos_match.start()] + body + text[dos_match.end():]
+        path.write_text(text.rstrip() + "\n", encoding="utf-8")
+
+
+def harmonize_dos_window(
+    steps: Sequence[Dict[str, Any]],
+    packages: Sequence[Dict[str, Any]],
+    query: str = "",
+) -> None:
+    """Replace an accidentally tiny full-DOS window with safe eV defaults.
+
+    dos.x expresses Emin/Emax/DeltaE in eV. Model-generated inputs have
+    occasionally converted these as though they were Ry, producing windows
+    such as +/-0.735 eV. Preserve deliberately narrow spectroscopy requests,
+    but make ordinary total-DOS workflows cover the relevant valence and
+    conduction states before approval.
+    """
+    explicit_narrow_request = bool(re.search(
+        r"(?i)(?:DOS|density of states).{0,80}(?:between|from|range|window|within)"
+        r".{0,40}[-+]?\d+(?:\.\d+)?\s*(?:eV|electron\s*volts?)",
+        query,
+    ))
+    if explicit_narrow_request:
+        return
+
+    def number(body: str, key: str) -> Optional[float]:
+        raw = _value(body, key)
+        if not raw:
+            return None
+        try:
+            return float(raw.replace("d", "e").replace("D", "e"))
+        except ValueError:
+            return None
+
+    for step, package in zip(steps, packages):
+        if step.get("tool") != "dos_post" or not package.get("input_paths"):
+            continue
+        path = Path(package["input_paths"][0])
+        text = path.read_text(encoding="utf-8", errors="replace")
+        match = re.search(r"(?mis)^\s*&dos\b.*?^\s*/\s*$", text)
+        if not match:
+            continue
+        body = match.group(0)
+        emin, emax = number(body, "emin"), number(body, "emax")
+        if emin is None or emax is None or emax - emin >= 5.0:
+            continue
+        replacements = {"emin": "-15.0", "emax": "10.0", "deltae": "0.01"}
+        for key, value in replacements.items():
+            line = f"  {key.capitalize() if key != 'deltae' else 'DeltaE'}={value},"
+            existing = re.search(rf"(?mi)^\s*{key}\s*=\s*[^\n]+$", body)
+            if existing:
+                body = body[:existing.start()] + line + body[existing.end():]
+            else:
+                slash = body.rfind("/")
+                body = body[:slash] + line + "\n" + body[slash:]
+        text = text[:match.start()] + body + text[match.end():]
         path.write_text(text.rstrip() + "\n", encoding="utf-8")
 
 

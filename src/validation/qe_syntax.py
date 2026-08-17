@@ -254,3 +254,40 @@ def validate_qe_syntax(path: str, exec_name: str) -> List[SyntaxFinding]:
                 findings.append(SyntaxFinding("QE_LOGICAL_INVALID", f"{key} requires a Fortran logical value, found {raw_value.strip()}."))
 
     return findings
+
+
+def remove_undocumented_namelist_keywords(path: str, exec_name: str) -> List[str]:
+    """Remove generated assignments that are absent from an executable's schema.
+
+    This intentionally handles only unknown keys. A key belonging to another
+    namelist is not moved automatically because relocation can change meaning.
+    """
+    schema = _schema(exec_name)
+    if not schema:
+        return []
+    source = Path(path)
+    lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    current = ""
+    repaired: List[str] = []
+    output: List[str] = []
+    for line in lines:
+        start = re.match(r"^\s*&([a-z][a-z0-9_]*)\b", line, re.I)
+        if start:
+            current = start.group(1).lower()
+            output.append(line)
+            continue
+        if current and re.match(r"^\s*/\s*(?:!.*)?$", line):
+            current = ""
+            output.append(line)
+            continue
+        assignment = re.match(r"^\s*([a-z][a-z0-9_]*(?:\s*\([^=\n]*\))?)\s*=", line, re.I)
+        allowed = schema.get(current)
+        if assignment and allowed is not None:
+            key = _base_key(assignment.group(1))
+            if key not in allowed and not any(key in keys for keys in schema.values()):
+                repaired.append(f"Removed undocumented {exec_name} &{current.upper()} keyword: {key}")
+                continue
+        output.append(line)
+    if repaired:
+        source.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+    return repaired

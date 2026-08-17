@@ -27,6 +27,20 @@ class SlurmLauncher:
         self.auto_confirm = auto_confirm
         self.default_time_limit = default_time_limit
         self.template_path = template_path or os.environ.get("TRITONDFT_SLURM_TEMPLATE", "")
+        self.max_nodes: Optional[int] = None
+        self.cores_per_node: Optional[int] = None
+
+    def set_resource_limits(self, max_nodes: int, cores_per_node: int) -> None:
+        if int(max_nodes) < 1 or int(cores_per_node) < 1:
+            raise ValueError("Slurm nodes and cores per node must both be positive integers.")
+        self.max_nodes = int(max_nodes)
+        self.cores_per_node = int(cores_per_node)
+
+    @property
+    def max_mpi_ranks(self) -> Optional[int]:
+        if self.max_nodes and self.cores_per_node:
+            return self.max_nodes * self.cores_per_node
+        return None
 
     def launch(
         self,
@@ -315,6 +329,11 @@ class SlurmLauncher:
             input_script = ""
 
         hw_desc = hardware_description or _default_slurm_hardware_description(parallel_np)
+        if self.max_nodes and self.cores_per_node:
+            hw_desc += (
+                f" HARD USER LIMIT: at most {self.max_nodes} node(s), with at most "
+                f"{self.cores_per_node} MPI core(s) per node and {self.max_mpi_ranks} total MPI ranks."
+            )
         if probe_output_path and Path(probe_output_path).exists():
             probe_output = _extract_probe_summary(probe_output_path)
         else:
@@ -369,9 +388,16 @@ The Command line must use $exe, $INPUT, and $OUTPUT exactly, so it can be insert
 
         resources = _extract_slurm_resource_line(generated)
         mpi_ranks = _extract_mpi_ranks(command_line) or parallel_np or 1
-        cores_per_node = _slurm_cores_per_node(parallel_np)
+        cores_per_node = self.cores_per_node or _slurm_cores_per_node(parallel_np)
+        if self.max_mpi_ranks:
+            mpi_ranks = min(mpi_ranks, self.max_mpi_ranks)
         nodes = int(resources.get("nodes") or max(1, math.ceil(mpi_ranks / cores_per_node)))
+        if self.max_nodes:
+            nodes = min(nodes, self.max_nodes)
         tasks_per_node = int(resources.get("tasks_per_node") or max(1, math.ceil(mpi_ranks / nodes)))
+        tasks_per_node = min(tasks_per_node, cores_per_node)
+        mpi_ranks = min(mpi_ranks, nodes * tasks_per_node)
+        command_line = _replace_mpi_ranks(command_line, mpi_ranks)
         time_limit = _normalize_slurm_time_limit(resources.get("time_limit") or self.default_time_limit)
         if not time_limit:
             raise RuntimeError("Auto-parallel prompt did not return a Slurm time_limit.")
@@ -393,6 +419,8 @@ The Command line must use $exe, $INPUT, and $OUTPUT exactly, so it can be insert
     ) -> Dict[str, Any]:
         """Build a safe package when the optional LLM resource planner fails."""
         mpi_ranks = self._parallel_np_for(exec_name, input_path, parallel_np)
+        if self.max_mpi_ranks:
+            mpi_ranks = min(mpi_ranks, self.max_mpi_ranks)
         if exec_name in {"bands.x", "dos.x", "q2r.x", "matdyn.x", "dynmat.x", "ev.x"}:
             mpi_ranks = 1
 
@@ -424,11 +452,14 @@ The Command line must use $exe, $INPUT, and $OUTPUT exactly, so it can be insert
                 "$exe -in $INPUT > $OUTPUT"
             )
         command_line = _enforce_safe_qe_parallel_flags(exec_name, command_line)
+        cores_per_node = self.cores_per_node or max(1, mpi_ranks)
+        nodes = min(self.max_nodes or 1, max(1, math.ceil(mpi_ranks / cores_per_node)))
+        tasks_per_node = min(cores_per_node, max(1, math.ceil(mpi_ranks / nodes)))
         return {
             "command_line": command_line,
             "mpi_ranks": mpi_ranks,
-            "nodes": 1,
-            "tasks_per_node": mpi_ranks,
+            "nodes": nodes,
+            "tasks_per_node": tasks_per_node,
             "time_limit": time_limit,
         }
 
@@ -697,6 +728,17 @@ def _extract_mpi_ranks(command_line: str) -> int:
         if match:
             return int(match.group(1))
     return 0
+
+
+def _replace_mpi_ranks(command_line: str, ranks: int) -> str:
+    command_line = re.sub(
+        r"(\b(?:mpirun|mpiexec)\b.*?(?:-np|-n)\s+)\d+",
+        rf"\g<1>{max(1, int(ranks))}", command_line, count=1,
+    )
+    return re.sub(
+        r"(\bsrun\b.*?(?:-n|--ntasks(?:=|\s+)))\d+",
+        rf"\g<1>{max(1, int(ranks))}", command_line, count=1,
+    )
 
 
 def _normalize_slurm_time_limit(value: Optional[Any]) -> str:

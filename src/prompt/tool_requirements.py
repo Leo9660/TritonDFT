@@ -41,8 +41,10 @@ pw_requirement_template = """
         1. Do NOT specify smearing or degauss.
 
     [band calculations]
-    - nbnd (CRITICAL): when calculation = 'nscf' OR 'bands', you MUST set nbnd to
-      the number of occupied Kohn-Sham states + 10. Without it pw.x computes only
+    - nbnd (CRITICAL): when calculation = 'nscf' OR 'bands', you MUST include
+      enough empty states. Use occupied Kohn-Sham states + 16 by default (preserve
+      a larger user value). Occupied states are ceil(nelec/2) for collinear
+      calculations, but ceil(nelec) for noncollinear/SOC calculations. Without it pw.x computes only
       the occupied bands, so there is NO conduction band and neither a band gap
       nor a band structure can be obtained.
     - This pipeline gives the two run types separate jobs. Quantum ESPRESSO itself
@@ -203,6 +205,10 @@ dosx_requirement_template = """
 
     [Output]
     - Always set fildos='<prefix>.dos' (or a fixed name 'dos.dat').
+    - Emin, Emax, and DeltaE are in eV. Unless the user explicitly requests a
+      narrower energy interval, use a conservative full-DOS window of
+      Emin=-15.0 eV, Emax=10.0 eV, and DeltaE=0.01 eV. Never convert these
+      three values to Ry and never generate a total window narrower than 5 eV.
     - bz_sum MUST match the dense NSCF integration family exactly:
         * occupations='tetrahedra'     -> bz_sum='tetrahedra'
         * occupations='tetrahedra_lin' -> bz_sum='tetrahedra_lin'

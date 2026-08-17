@@ -20,6 +20,9 @@ from tool import get_spec
 from validation import (
     normalize_plan,
     harmonize_dos_integration,
+    harmonize_dos_window,
+    harmonize_nbnd,
+    inherit_vdw_model,
     validate_generated_workflow,
     validate_plan,
     validate_qe_input,
@@ -36,7 +39,7 @@ from utils import (
 from vasp_agent import RemoteClusterVASPAgent, VASPAgent
 from results import extract_magnetic_moments, generate_electronic_plots
 from structure_paths import materialize_relaxed_band_path
-from workflow_state import AttemptCheckpoint, WorkflowCheckpoint, create_checkpoint, file_sha256, infer_branches
+from workflow_state import AttemptCheckpoint, WorkflowCheckpoint, create_checkpoint, file_sha256, infer_branches, infer_dependencies
 from workflow_context import WorkflowContext, create_workflow_context
 
 
@@ -555,6 +558,31 @@ class SSHClusterTransport:
             verbose=self.verbose,
         )
 
+    def copy_remote_artifacts(
+        self, source_dir: str, destination_dir: str, patterns: List[str]
+    ) -> None:
+        """Copy required producer files into a consumer attempt and verify each pattern."""
+        safe_patterns: List[str] = []
+        for pattern in patterns:
+            if not re.fullmatch(r"[A-Za-z0-9_.+*-]+", pattern) or "/" in pattern:
+                raise ValueError(f"Unsafe remote artifact pattern: {pattern!r}")
+            safe_patterns.append(pattern)
+        source_q = shlex.quote(source_dir)
+        destination_q = shlex.quote(destination_dir)
+        commands = [f"mkdir -p {destination_q}"]
+        for pattern in safe_patterns:
+            # The pattern is deliberately unquoted so a q-grid family such as dyn* expands.
+            source_pattern = f"{source_q}/{pattern}"
+            commands.append(
+                f"set -- {source_pattern}; "
+                f"[ -e \"$1\" ] || {{ echo 'Missing required workflow artifact: {pattern}' >&2; exit 44; }}; "
+                f"cp -a {source_pattern} {destination_q}/"
+            )
+        _run_interactive(
+            f"ssh {shlex.quote(self.ssh_target)} {shlex.quote(' && '.join(commands))}",
+            verbose=self.verbose,
+        )
+
     def upload_directory(self, local_dir: Path, remote_dir: str) -> None:
         remote_q = shlex.quote(remote_dir)
         _run_interactive(
@@ -896,6 +924,69 @@ def _enforce_workflow_artifact_names(step: Dict[str, Any], path: str) -> None:
     input_path.write_text(text.rstrip() + "\n", encoding="utf-8")
 
 
+def _input_assignment(path: str, key: str) -> str:
+    """Read one quoted or unquoted scalar assignment from a QE input file."""
+    text = Path(path).read_text(encoding="utf-8")
+    match = re.search(
+        rf"(?mi)^\s*{re.escape(key)}\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^,!\n/]+))",
+        text,
+    )
+    if not match:
+        return ""
+    return next((value for value in match.groups() if value is not None), "").strip()
+
+
+def _required_parent_artifacts(step: Dict[str, Any], input_paths: List[str]) -> List[str]:
+    """Return non-save files a QE postprocessor must inherit from its direct producer."""
+    if not input_paths:
+        return []
+    tool = str(step.get("tool") or "")
+    input_path = input_paths[0]
+    if tool == "dynmat_post":
+        filename = _input_assignment(input_path, "fildyn")
+        return [Path(filename).name] if filename else []
+    if tool == "q2r_post":
+        filename = _input_assignment(input_path, "fildyn")
+        # A q-grid ph.x calculation normally writes fildyn0, fildyn1, ... .
+        return [f"{Path(filename).name}*"] if filename else []
+    if tool == "matdyn_post":
+        filename = _input_assignment(input_path, "flfrc")
+        return [Path(filename).name] if filename else []
+    return []
+
+
+def _stage_required_parent_artifacts(
+    transport: Any,
+    step: Dict[str, Any],
+    checkpoint: Any,
+    workflow_state: WorkflowCheckpoint,
+    input_paths: List[str],
+    remote_dir: str,
+) -> None:
+    """Stage explicit file dependencies that are not part of a QE save directory."""
+    patterns = _required_parent_artifacts(step, input_paths)
+    if not patterns:
+        return
+    producer_tools = {
+        "dynmat_post": {"pw_phonon_gamma"},
+        "q2r_post": {"pw_phonon_gamma"},
+        "matdyn_post": {"q2r_post"},
+    }.get(str(step.get("tool") or ""), set())
+    parents = [workflow_state.step(parent_id) for parent_id in checkpoint.depends_on]
+    producer = next(
+        (parent for parent in parents if parent.remote_dir and parent.tool in producer_tools),
+        None,
+    )
+    if producer is None:
+        raise RuntimeError(
+            f"{step.get('tool')} requires {', '.join(patterns)}, but no completed producer "
+            "directory is recorded in its dependencies."
+        )
+    if not hasattr(transport, "copy_remote_artifacts"):
+        raise RuntimeError("The cluster transport cannot stage required parent artifacts.")
+    transport.copy_remote_artifacts(producer.remote_dir, remote_dir, patterns)
+
+
 def _force_ph_fresh_start(path: str) -> None:
     """Disable ph.x recovery when a branch has been deliberately rebuilt cleanly."""
     input_path = Path(path)
@@ -1078,12 +1169,126 @@ def _task_file_stem(step: Dict[str, Any]) -> str:
     return cleaned or f"step-{step.get('id', 'unknown')}"
 
 
+def _pw_pseudo_dirs_for_work_dir(
+    packages: List[Dict[str, Any]], work_dir: str, fallback: str
+) -> set[str]:
+    """Return pseudo libraries used by pw.x, ignoring postprocessor metadata."""
+    return {
+        str(candidate.get("pseudo_dir") or fallback)
+        for candidate in packages
+        if str(candidate.get("work_dir")) == str(work_dir)
+        and candidate.get("exec_name") == "pw.x"
+    }
+
+
+def _may_clone_parent_qe_state(
+    parent,
+    child,
+    plan: List[Dict[str, Any]],
+    packages: List[Dict[str, Any]],
+) -> bool:
+    """Whether a child may inherit the parent's charge/wavefunction state.
+
+    Geometry is materialized separately from the relaxation output. A new SCF
+    at a branch boundary (most importantly scalar -> SOC) must start with an
+    empty electronic workspace, and pw.x states made with different pseudo
+    libraries are never compatible.
+    """
+    if child.tool == "pw_scf" and parent.branch != child.branch:
+        return False
+    package_by_id = {
+        int(step["id"]): package for step, package in zip(plan, packages)
+    }
+    parent_package = package_by_id.get(int(parent.id), {})
+    child_package = package_by_id.get(int(child.id), {})
+    if parent_package.get("exec_name") == "pw.x" and child_package.get("exec_name") == "pw.x":
+        parent_pseudo = str(parent_package.get("pseudo_dir") or "")
+        child_pseudo = str(child_package.get("pseudo_dir") or "")
+        if parent_pseudo and child_pseudo and Path(parent_pseudo).resolve() != Path(child_pseudo).resolve():
+            return False
+    return True
+
+
+def _workflow_graph_text(
+    steps: List[Dict[str, Any]],
+    statuses: Optional[Dict[int, str]] = None,
+) -> str:
+    """Render the executable DAG as a deterministic, readable text tree."""
+    if not steps:
+        return "Workflow graph is unavailable because the plan has no executable steps.\n"
+    statuses = statuses or {}
+    dependencies = infer_dependencies(steps)
+    by_id = {int(step["id"]): step for step in steps}
+    children: Dict[int, List[int]] = {step_id: [] for step_id in by_id}
+    roots: List[int] = []
+    for step, parents in zip(steps, dependencies):
+        step_id = int(step["id"])
+        if not parents:
+            roots.append(step_id)
+        for parent in parents:
+            children.setdefault(parent, []).append(step_id)
+
+    state_symbol = {
+        "completed": "✓", "running": "●", "submitted": "●",
+        "ready": "○", "pending": "○", "blocked": "◌",
+        "failed": "✗", "awaiting_user": "⏸", "cancelled": "✗",
+    }
+    branches = dict(zip(by_id, infer_branches(steps)))
+
+    def label(step_id: int) -> str:
+        step = by_id[step_id]
+        tool = str(step.get("tool") or "step")
+        problem = re.sub(r"\s+", " ", str(step.get("problem") or "")).strip()
+        if len(problem) > 78:
+            problem = problem[:75].rstrip() + "..."
+        status = statuses.get(step_id, "pending")
+        symbol = state_symbol.get(status, "○")
+        return f"{symbol} [{step_id}] {tool} — {problem}  ({branches.get(step_id, 'workflow')})"
+
+    lines = [
+        "Dependency graph",
+        "================",
+        "Legend: ✓ completed  ● running  ○ queued  ◌ blocked  ✗ failed  ⏸ awaiting user",
+        "",
+    ]
+    rendered: set[int] = set()
+
+    def render(step_id: int, prefix: str = "", connector: str = "") -> None:
+        shared = step_id in rendered
+        lines.append(prefix + connector + label(step_id) + ("  [shared dependency]" if shared else ""))
+        if shared:
+            return
+        rendered.add(step_id)
+        descendants = children.get(step_id, [])
+        for index, child in enumerate(descendants):
+            last = index == len(descendants) - 1
+            render(child, prefix + ("    " if not connector or connector.startswith("└") else "│   "), "└── " if last else "├── ")
+
+    for root_index, root_id in enumerate(roots):
+        if root_index:
+            lines.append("")
+        render(root_id)
+    parallel_parents = [step_id for step_id, child_ids in children.items() if len(child_ids) > 1]
+    if parallel_parents:
+        lines.extend([
+            "",
+            "Parallel opportunity",
+            "--------------------",
+            "Sibling calculations branching from step(s) "
+            + ", ".join(map(str, parallel_parents))
+            + " can be submitted together after their shared dependency completes.",
+        ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _approve_inputs_popup(
     plan: str,
     input_paths: List[str],
     workflow_validator=None,
     *,
     review_stage: str = "inputs",
+    workflow_steps: Optional[List[Dict[str, Any]]] = None,
+    resource_defaults: Optional[Dict[str, int]] = None,
 ) -> Any:
     plan_only = review_stage == "plan"
     print("\n[approval] Scientific assessment and execution plan are ready." if plan_only else "\n[approval] All inputs are ready.")
@@ -1123,6 +1328,37 @@ def _approve_inputs_popup(
         plan_text.configure(state="disabled")
         notebook.add(plan_text, text="Complete plan")
 
+        graph_text = tk.Text(notebook, wrap="none", font=("Menlo", 12))
+        graph_text.insert("1.0", _workflow_graph_text(workflow_steps or []))
+        graph_text.configure(state="disabled")
+        notebook.add(graph_text, text="Workflow graph")
+
+        resource_entries: Dict[str, Any] = {}
+        if plan_only:
+            resources_frame = ttk.Frame(notebook)
+            defaults = resource_defaults or {}
+            ttk.Label(
+                resources_frame,
+                text=("Enter the maximum resources available to one workflow job. TritonDFT may use fewer "
+                      "resources for small or serial post-processing steps, but it will never exceed these limits."),
+                wraplength=980, justify="left",
+            ).pack(fill="x", padx=12, pady=(14, 12))
+            form = ttk.Frame(resources_frame)
+            form.pack(anchor="nw", padx=12)
+            for row, (label, key) in enumerate((("Maximum nodes", "max_nodes"), ("Cores per node", "cores_per_node"))):
+                ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=6)
+                entry = ttk.Entry(form, width=12)
+                value = defaults.get(key)
+                if value:
+                    entry.insert(0, str(value))
+                entry.grid(row=row, column=1, sticky="w", pady=6)
+                resource_entries[key] = entry
+            ttk.Label(
+                resources_frame,
+                text="Examples: 1 node × 128 cores; 2 nodes × 24 cores; 1 node × 16 cores.",
+            ).pack(anchor="w", padx=12, pady=12)
+            notebook.add(resources_frame, text="Available resources")
+
         editors: Dict[str, Any] = {}
         for path in input_paths:
             editor = tk.Text(notebook, wrap="none", undo=True, font=("Menlo", 11))
@@ -1134,7 +1370,22 @@ def _approve_inputs_popup(
         validation_text.configure(state="disabled")
         notebook.add(validation_text, text="Validation")
 
-        decision = {"action": "cancel", "revision": ""}
+        decision = {"action": "cancel", "revision": "", "resources": {}}
+
+        def read_resources() -> Optional[Dict[str, int]]:
+            if not plan_only:
+                return dict(resource_defaults or {})
+            try:
+                values = {key: int(entry.get().strip()) for key, entry in resource_entries.items()}
+            except ValueError:
+                notebook.select(resources_frame)
+                messagebox.showerror("Resources required", "Nodes and cores per node must be positive whole numbers.")
+                return None
+            if values["max_nodes"] < 1 or values["cores_per_node"] < 1:
+                notebook.select(resources_frame)
+                messagebox.showerror("Resources required", "Nodes and cores per node must both be at least 1.")
+                return None
+            return values
 
         revision_frame = ttk.Frame(notebook)
         ttk.Label(
@@ -1185,15 +1436,19 @@ def _approve_inputs_popup(
             return messages
 
         def approve() -> None:
+            resources = read_resources()
+            if resources is None:
+                return
             messages = refresh_validation()
             if messages:
                 notebook.select(validation_text)
                 messagebox.showerror(
                     "Input validation failed",
-                    "One or more inputs are incomplete. Fix the listed issues before approval.",
+                    "The workflow has blocking validation issues. Fix the listed issues before approval.",
                 )
                 return
             decision["action"] = "approve"
+            decision["resources"] = resources
             # Schedule destruction inside Tk's own event loop. mainloop() must
             # return before any SSH/probe/cluster work starts.
             root.withdraw()
@@ -1262,7 +1517,20 @@ def _approve_inputs_popup(
                 if validation_messages:
                     print("Approval is blocked until the validation errors are fixed.")
                     continue
-                return {"action": "approve", "revision": ""}
+                resources = dict(resource_defaults or {})
+                if plan_only:
+                    try:
+                        resources = {
+                            "max_nodes": int(input("Maximum nodes available per job: ").strip()),
+                            "cores_per_node": int(input("Cores per node available: ").strip()),
+                        }
+                    except ValueError:
+                        print("Nodes and cores per node must be positive whole numbers.")
+                        continue
+                    if min(resources.values()) < 1:
+                        print("Nodes and cores per node must both be at least 1.")
+                        continue
+                return {"action": "approve", "revision": "", "resources": resources}
             if normalized in {"cancel", "no", "n"}:
                 return {"action": "cancel", "revision": ""}
             if normalized == "revise":
@@ -1334,6 +1602,77 @@ def _launch_workflow_monitor(run_dir: str | Path) -> None:
         print(f"[monitor] live workflow window unavailable: {exc}")
 
 
+def _discover_workflows(work_root: str | Path) -> List[Dict[str, Any]]:
+    """Find checkpointed workflows without descending into large QE save trees."""
+    root = Path(work_root).expanduser().resolve()
+    found: List[Dict[str, Any]] = []
+    if not root.is_dir():
+        return found
+    skipped = {"approved_inputs", "materialized_inputs", "pseudos", "recovery_proposals"}
+    for directory, names, files in os.walk(root):
+        names[:] = [
+            name for name in names
+            if name not in skipped and not name.endswith(".save") and name != "attempts"
+        ]
+        if "workflow_state.json" not in files:
+            continue
+        path = Path(directory) / "workflow_state.json"
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        found.append({
+            "run_dir": str(Path(directory).resolve()),
+            "name": Path(directory).name,
+            "status": str(state.get("status", "unknown")),
+            "updated_at": str(state.get("updated_at", "")),
+            "query": re.sub(r"\s+", " ", str(state.get("query", ""))).strip(),
+        })
+        # A run directory cannot contain another independent run checkpoint.
+        names[:] = []
+    return sorted(found, key=lambda item: item["updated_at"], reverse=True)
+
+
+def _print_workflows(workflows: List[Dict[str, Any]]) -> None:
+    if not workflows:
+        print("[workflows] No checkpointed workflows were found.")
+        return
+    print("\nRecent TritonDFT workflows")
+    print("==========================")
+    for index, item in enumerate(workflows, 1):
+        query = item["query"][:72] + ("…" if len(item["query"]) > 72 else "")
+        print(f"{index:>3}. {item['name']:<32} {item['status']:<15} {query}")
+        print(f"     {item['run_dir']}")
+
+
+def _resolve_workflow_to_open(selection: str, work_root: str | Path) -> str:
+    workflows = _discover_workflows(work_root)
+    requested = selection.strip()
+    if not requested or requested.lower() == "latest":
+        return workflows[0]["run_dir"] if workflows else ""
+    if requested.isdigit():
+        index = int(requested) - 1
+        return workflows[index]["run_dir"] if 0 <= index < len(workflows) else ""
+    candidate = Path(requested).expanduser()
+    if not candidate.is_absolute():
+        rooted = Path(work_root).expanduser() / candidate
+        if rooted.is_dir():
+            candidate = rooted
+    candidate = candidate.resolve()
+    return str(candidate) if (candidate / "workflow_state.json").is_file() else ""
+
+
+def _parse_resume_command(query: str) -> tuple[str, Optional[int]]:
+    """Parse `resume <workflow> [--fresh-start-step N]`."""
+    arguments = re.sub(r"(?i)^resume\b", "", query, count=1).strip()
+    match = re.fullmatch(r"(.*?)(?:\s+--fresh-start-step\s+(\d+))?", arguments, re.I)
+    if not match:
+        raise ValueError("Use: resume <number|latest|run-directory> [--fresh-start-step N]")
+    selection = match.group(1).strip() or "latest"
+    step_id = int(match.group(2)) if match.group(2) else None
+    return selection, step_id
+
+
 class RemoteClusterDFTAgent:
     """
     Orchestrates DFTAgent generation locally and QE execution remotely.
@@ -1359,6 +1698,20 @@ class RemoteClusterDFTAgent:
         self.download_callback = download_callback or _prompt_download_scope
         self.failure_callback = failure_callback or _prompt_failure_action
         self.agent.run_mode = "cluster_input"
+
+    def _apply_resource_limits(self, resources: Dict[str, Any], run_dir: Path) -> None:
+        nodes = int(resources.get("max_nodes", 0))
+        cores = int(resources.get("cores_per_node", 0))
+        if nodes < 1 or cores < 1:
+            raise ValueError("Approved resource limits require positive nodes and cores per node.")
+        normalized = {"max_nodes": nodes, "cores_per_node": cores, "max_mpi_ranks": nodes * cores}
+        self.agent.parallel_np = nodes * cores
+        self.agent.hardware_description = (
+            f"User allocation limit: maximum {nodes} node(s), {cores} cores per node, "
+            f"{nodes * cores} total MPI ranks per job. Use fewer when the calculation will not scale."
+        )
+        self.agent.slurm_launcher.set_resource_limits(nodes, cores)
+        (run_dir / "resource_limits.json").write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
 
     def _download_workflow_artifacts(
         self,
@@ -1618,6 +1971,57 @@ class RemoteClusterDFTAgent:
         state.save()
         print(f"[recovery] step {step_id} is ready for a new immutable attempt.")
 
+    def review_and_fresh_start_step(self, run_dir: str, step_id: int) -> bool:
+        """Review/edit a completed step's canonical inputs before scheduling a rerun."""
+        state = WorkflowCheckpoint.load(run_dir)
+        checkpoint = state.step(step_id)
+        if not checkpoint.input_paths:
+            raise RuntimeError(f"Step {step_id} has no editable input files.")
+        step = next((item for item in state.plan if int(item.get("id", -1)) == step_id), None)
+        if step is None:
+            raise RuntimeError(f"Step {step_id} is missing from the saved workflow plan.")
+        review = (
+            "TritonDFT rerun review\n"
+            "======================\n\n"
+            f"Workflow: {state.run_dir}\n"
+            f"Step {step_id}: {checkpoint.problem}\n"
+            f"Tool: {checkpoint.tool}\n\n"
+            "Edit the input tab if needed. No workflow state is changed and no cluster job "
+            "is submitted until Approve & Run is selected. The previous attempt remains immutable.\n"
+        )
+
+        def validation_messages() -> List[str]:
+            issues = validate_generated_workflow(state.query, state.plan, state.packages)
+            return [issue.format() for issue in issues if issue.blocking]
+
+        resource_defaults: Dict[str, int] = {}
+        resource_path = Path(state.run_dir) / "resource_limits.json"
+        if resource_path.is_file():
+            try:
+                resource_defaults = json.loads(resource_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                resource_defaults = {}
+        decision = _approve_inputs_popup(
+            review,
+            list(checkpoint.input_paths),
+            workflow_validator=validation_messages,
+            review_stage="inputs",
+            workflow_steps=[step],
+            resource_defaults=resource_defaults,
+        )
+        action, revision = _approval_result(decision)
+        if action == "revise":
+            print(
+                "[rerun] The rerun was not scheduled. Edit the input directly in the input tab "
+                "and choose Approve & Run, or cancel and issue a new scientific request."
+            )
+            return False
+        if action != "approve":
+            print("[rerun] Cancelled; the completed workflow was not changed.")
+            return False
+        self.fresh_start_step(run_dir, step_id)
+        return True
+
     def run(
         self,
         query: str,
@@ -1795,6 +2199,11 @@ class RemoteClusterDFTAgent:
                     if issue.blocking
                 ],
                 review_stage="plan",
+                workflow_steps=subproblems,
+                resource_defaults={
+                    "max_nodes": getattr(self.agent.slurm_launcher, "max_nodes", None),
+                    "cores_per_node": getattr(self.agent.slurm_launcher, "cores_per_node", None),
+                },
             )
             plan_action, plan_revision = _approval_result(plan_decision)
             if plan_action == "revise":
@@ -1826,6 +2235,8 @@ class RemoteClusterDFTAgent:
                     "plan": subproblems,
                     "input_paths": [],
                 }
+            plan_resources = plan_decision.get("resources", {}) if isinstance(plan_decision, dict) else {}
+            self._apply_resource_limits(plan_resources, Path(self.agent.work_dir))
 
         packages: List[Dict[str, Any]] = []
         input_paths: List[str] = []
@@ -1898,9 +2309,13 @@ class RemoteClusterDFTAgent:
             if step.get("tool") == "pw_vc_relax":
                 relaxation_seen = True
 
-        # NSCF occupations and dos.x bz_sum form one deterministic integration
-        # contract. Reconcile them before validation and before user approval.
+        # Reconcile unambiguous producer/consumer contracts before validation
+        # and before user approval. The vdW pass copies only dispersion keys,
+        # so fully relativistic UPFs and SOC settings remain branch-specific.
+        inherit_vdw_model(packages)
         harmonize_dos_integration(subproblems, packages)
+        harmonize_dos_window(subproblems, packages, query)
+        harmonize_nbnd(packages)
 
         validation_report_path = self.agent.work_dir / "validation_report.txt"
         generation_issues = validate_generated_workflow(query, subproblems, packages)
@@ -1931,12 +2346,21 @@ class RemoteClusterDFTAgent:
             "parameter_proposals": [package.get("params_json", "") for package in packages],
             "validation": [issue.format() for issue in generation_issues],
             "status": "awaiting_approval",
+            "resource_limits": (
+                json.loads((self.agent.work_dir / "resource_limits.json").read_text(encoding="utf-8"))
+                if (self.agent.work_dir / "resource_limits.json").is_file() else {}
+            ),
         }
         manifest_path = self.agent.work_dir / "approval_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
         raw_decision = (
-            self.approval_callback(plan, input_paths, workflow_validation_messages)
+            self.approval_callback(
+                plan,
+                input_paths,
+                workflow_validation_messages,
+                workflow_steps=subproblems,
+            )
             if self._uses_default_approval
             else self.approval_callback(plan, input_paths)
         )
@@ -1997,26 +2421,29 @@ class RemoteClusterDFTAgent:
             work_dir = str(package["work_dir"])
             if work_dir in packaged_work_dirs:
                 continue
+            # Only pw.x inputs contain ATOMIC_SPECIES and consume a pseudo
+            # library. Post-processors inherit an incidental pseudo_dir from
+            # generation, but bands.x/dos.x/projwfc.x never read it; including
+            # those labels creates false scalar-vs-FR branch conflicts.
             branch_inputs = [
                 path for candidate in packages
                 if str(candidate["work_dir"]) == work_dir
                 for path in candidate.get("input_paths", [])
             ]
-            branch_pseudo_dirs = {
-                str(candidate.get("pseudo_dir") or self.agent.pseudo_dir)
-                for candidate in packages
-                if str(candidate["work_dir"]) == work_dir
-            }
-            if len(branch_pseudo_dirs) != 1:
+            branch_pseudo_dirs = _pw_pseudo_dirs_for_work_dir(
+                packages, work_dir, self.agent.pseudo_dir
+            )
+            if len(branch_pseudo_dirs) > 1:
                 raise RuntimeError(
                     f"Branch {Path(work_dir).name} mixes incompatible pseudopotential libraries. "
                     "The planner must create separate scalar-relativistic and SOC branches."
                 )
-            package_pseudos_for_remote(
-                branch_inputs,
-                pseudo_dir=next(iter(branch_pseudo_dirs)),
-                work_dir=work_dir,
-            )
+            if branch_pseudo_dirs:
+                package_pseudos_for_remote(
+                    branch_inputs,
+                    pseudo_dir=next(iter(branch_pseudo_dirs)),
+                    work_dir=work_dir,
+                )
             packaged_work_dirs.add(work_dir)
         generated_context = create_workflow_context(
             query, self.agent.pseudo_dir, packages
@@ -2137,9 +2564,22 @@ class RemoteClusterDFTAgent:
             checkpoint.remote_dir = remote_dir
             for parent_id in checkpoint.depends_on:
                 parent = workflow_state.step(parent_id)
-                if parent.branch != checkpoint.branch and parent.remote_dir:
+                if (
+                    parent.remote_dir
+                    and _may_clone_parent_qe_state(
+                        parent, checkpoint, workflow_state.plan, workflow_state.packages
+                    )
+                ):
                     self.transport.clone_remote_directory(parent.remote_dir, remote_dir)
                     break
+            _stage_required_parent_artifacts(
+                self.transport,
+                step,
+                checkpoint,
+                workflow_state,
+                package.get("input_paths", []),
+                remote_dir,
+            )
             checkpoint.attempts += 1
             checkpoint.set_status("running")
             workflow_state.status = "running"
@@ -2266,6 +2706,9 @@ class RemoteClusterDFTAgent:
         """Resume an approved workflow without regenerating completed steps."""
         workflow_state = WorkflowCheckpoint.load(run_dir)
         self.agent.work_dir = Path(workflow_state.run_dir)
+        resource_path = self.agent.work_dir / "resource_limits.json"
+        if resource_path.is_file():
+            self._apply_resource_limits(json.loads(resource_path.read_text(encoding="utf-8")), self.agent.work_dir)
         problems = workflow_state.verify_completed_inputs()
         if problems:
             raise RuntimeError(
@@ -2496,12 +2939,30 @@ class RemoteClusterDFTAgent:
             local_run_dir = attempt_dir
             for parent_id in checkpoint.depends_on:
                 parent = workflow_state.step(parent_id)
-                if parent.remote_dir and hasattr(self.transport, "clone_remote_directory"):
+                if (
+                    parent.remote_dir
+                    and hasattr(self.transport, "clone_remote_directory")
+                    and _may_clone_parent_qe_state(
+                        parent, checkpoint, workflow_state.plan, workflow_state.packages
+                    )
+                ):
                     self.transport.clone_remote_directory(parent.remote_dir, remote_dir)
                     break
             else:
-                if checkpoint.seed_remote_dir and hasattr(self.transport, "clone_remote_directory"):
+                if (
+                    not checkpoint.depends_on
+                    and checkpoint.seed_remote_dir
+                    and hasattr(self.transport, "clone_remote_directory")
+                ):
                     self.transport.clone_remote_directory(checkpoint.seed_remote_dir, remote_dir)
+            _stage_required_parent_artifacts(
+                self.transport,
+                step,
+                checkpoint,
+                workflow_state,
+                attempt_package.get("input_paths", []),
+                remote_dir,
+            )
             checkpoint.job_ids = []
             checkpoint.set_status("running")
             attempt.status = "running"
@@ -2883,7 +3344,12 @@ def interactive_main() -> None:
         agent = RemoteClusterDFTAgent(dft_agent, transport)
 
     print("you are all set to run TritonDFT")
-    print(f"\nRemote cluster DFT agent is ready ({'VASP' if dft_code == 'vasp' else 'Quantum ESPRESSO'}). Type 'exit' or 'quit' to stop.\n")
+    print(f"\nRemote cluster DFT agent is ready ({'VASP' if dft_code == 'vasp' else 'Quantum ESPRESSO'}). Type 'exit' or 'quit' to stop.")
+    print(
+        "Workflow browser: 'workflows', 'open latest', 'open <number>', or 'open <run-directory>'.\n"
+        "Submission retry: 'resume latest', 'resume <number>', or 'resume <run-directory>'.\n"
+        "Rerun a completed step: 'resume <number> --fresh-start-step <step-id>'.\n"
+    )
     try:
         if args.resume:
             if dft_code != "qe":
@@ -2928,6 +3394,68 @@ def interactive_main() -> None:
             if query.lower() in {"exit", "quit", "q"}:
                 break
             if not query:
+                continue
+            normalized_query = query.lower()
+            if normalized_query in {"workflows", "workflow", "runs", "history"}:
+                _print_workflows(_discover_workflows(args.work_dir))
+                continue
+            if normalized_query == "open" or normalized_query.startswith("open "):
+                selection = query[4:].strip() or "latest"
+                run_to_open = _resolve_workflow_to_open(selection, args.work_dir)
+                if not run_to_open:
+                    print(
+                        f"[workflows] Could not resolve {selection!r}. "
+                        "Type 'workflows' to list available run numbers and directories."
+                    )
+                    continue
+                print(f"[workflows] Opening monitor: {run_to_open}")
+                _launch_workflow_monitor(run_to_open)
+                continue
+            if normalized_query == "resume" or normalized_query.startswith("resume "):
+                if dft_code != "qe":
+                    print("Workflow resume currently supports Quantum ESPRESSO only.")
+                    continue
+                try:
+                    selection, fresh_step = _parse_resume_command(query)
+                except ValueError as exc:
+                    print(f"[resume] {exc}")
+                    continue
+                run_to_resume = _resolve_workflow_to_open(selection, args.work_dir)
+                if not run_to_resume:
+                    print(
+                        f"[resume] Could not resolve {selection!r}. "
+                        "Type 'workflows' to list saved run numbers and directories."
+                    )
+                    continue
+                saved_state = WorkflowCheckpoint.load(run_to_resume)
+                if saved_state.status == "completed" and fresh_step is None:
+                    print(f"[resume] Workflow is already completed: {run_to_resume}")
+                    print("[resume] To rerun a step, add: --fresh-start-step <step-id>")
+                    continue
+                if fresh_step is not None:
+                    try:
+                        scheduled = agent.review_and_fresh_start_step(run_to_resume, fresh_step)
+                    except Exception as exc:
+                        print(f"[resume] Could not schedule step {fresh_step}: {exc}")
+                        continue
+                    if not scheduled:
+                        continue
+                    print(f"[resume] Step {fresh_step} scheduled as a new immutable attempt.")
+                print(f"[resume] Reusing saved plan and approved inputs: {run_to_resume}")
+                print("[resume] No planning or input-generation API calls will be made.")
+                try:
+                    result = agent.resume(run_to_resume)
+                    print(json.dumps(result, indent=2))
+                except KeyboardInterrupt:
+                    print("\n[resume] interrupted; the workflow checkpoint remains available.")
+                except Exception as exc:
+                    try:
+                        state = WorkflowCheckpoint.load(run_to_resume)
+                        state.mark_unfinished_failure(str(exc))
+                    except Exception:
+                        pass
+                    print(f"[resume] submission paused again: {exc}")
+                    print(f"[resume] After fixing the connection/submission issue, run: resume {run_to_resume}")
                 continue
             try:
                 reuse_run_dir = ""
