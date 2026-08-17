@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from sqlalchemy import text
 from db import SessionLocal, Job, init_db
 from credits import count_tokens, reconcile
-from artifacts import extract_result, cleanup_scratch
+from artifacts import extract_result, cleanup_scratch, sweep_stale_scratch
 from DFTAgent import DFTAgent, JobCancelled
 
 WORKER_ID = os.environ.get("HOSTNAME", socket.gethostname())
@@ -45,6 +45,12 @@ POLL_INTERVAL_S = 2.0
 # Unique work dir per worker pod so concurrent workers don't collide on the
 # shared RWX PVC.
 WORK_DIR = f"/workspace/tmp/{WORKER_ID}"
+ARTIFACT_ROOT = "/workspace/tmp"
+# Age past which a run directory cannot belong to a live job, so its QE
+# intermediates are safe to sweep. Generous: a job is capped at JOB_TIMEOUT_S and
+# assistant-mode gates auto-continue after APPROVAL_TIMEOUT_S each.
+SWEEP_MIN_AGE_S = int(os.environ.get("SWEEP_MIN_AGE_S", str(6 * 3600)))
+SWEEP_INTERVAL_S = int(os.environ.get("SWEEP_INTERVAL_S", str(3600)))
 
 _REAL_STDOUT = sys.stdout
 _REAL_STDERR = sys.stderr
@@ -541,6 +547,11 @@ def main():
 
     init_db()  # idempotent — ensures tables exist even if worker starts first
 
+    # A worker starting up is precisely when a previous pod's leftovers exist.
+    n, freed = sweep_stale_scratch(ARTIFACT_ROOT, SWEEP_MIN_AGE_S)
+    if n:
+        log(f"startup sweep: cleaned {n} stale run dir(s), {freed / 1048576:.0f} MB freed")
+
     agent = DFTAgent(
         model=os.environ.get("DEFAULT_MODEL", "gpt-4o"),
         dft_tool="quantum espresso",
@@ -565,6 +576,7 @@ def main():
         force_vc_relax=os.environ.get("FORCE_VC_RELAX", "1").lower() not in ("0", "false", "no"),
     )
     log("agent loaded, polling for jobs")
+    last_sweep = time.time()
 
     while True:
         try:
@@ -575,6 +587,13 @@ def main():
             claimed = None
 
         if claimed is None:
+            # Idle is the safe moment to sweep: nothing of ours is being written,
+            # and the age threshold keeps us off other workers' live runs.
+            if time.time() - last_sweep > SWEEP_INTERVAL_S:
+                last_sweep = time.time()
+                n, freed = sweep_stale_scratch(ARTIFACT_ROOT, SWEEP_MIN_AGE_S)
+                if n:
+                    log(f"sweep: cleaned {n} stale run dir(s), {freed / 1048576:.0f} MB freed")
             time.sleep(POLL_INTERVAL_S)
             continue
 
