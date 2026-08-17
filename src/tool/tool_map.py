@@ -25,6 +25,12 @@ class ToolSpec:
     section: str = ""  # Description of required sections in input file
     requirement_key: Optional[str] = None  # Additional textual requirements for the input file
     parse_requirement_key: Optional[str] = None  # Parsing requirements for the output file
+    # Does this executable's namelist accept a `prefix` variable? pw.x and the
+    # post-processors that read <prefix>.save do; the ones driven purely by file
+    # names (q2r.x/matdyn.x/dynmat.x via fildyn/flfrc, ev.x) do NOT, and Fortran
+    # aborts with "reading input namelist" on an unknown variable. Gates the
+    # prefix patching in DFTAgent.
+    takes_prefix: bool = True
 
     def __post_init__(self):
         if self.exec == "pw.x":
@@ -141,6 +147,7 @@ FN_MAP: Dict[str, ToolSpec] = {
     ),
     "q2r_post": ToolSpec(
         exec="q2r.x",
+        takes_prefix=False,
         required=(),
         optional=("input_from", "fildyn", "flfrc"),
         description="Fourier transform dynamical matrices to real space",
@@ -148,6 +155,7 @@ FN_MAP: Dict[str, ToolSpec] = {
     ),
     "matdyn_post": ToolSpec(
         exec="matdyn.x",
+        takes_prefix=False,
         required=(),
         optional=("asr", "dos", "q_in_cryst_coord", "q_path", "flfrc", "fldos", "flfrq"),
         description="Phonon frequencies / DOS along paths (DISPERSION post-processing only). "
@@ -157,6 +165,7 @@ FN_MAP: Dict[str, ToolSpec] = {
     ),
     "dynmat_post": ToolSpec(
         exec="dynmat.x",
+        takes_prefix=False,
         required=(),
         optional=("asr", "fildyn", "filout", "filmol", "filxsf", "q", "amass"),
         description="Process a SINGLE-q dynamical matrix from ph.x (e.g. Gamma) into "
@@ -176,6 +185,7 @@ FN_MAP: Dict[str, ToolSpec] = {
     ),
     "elastic_post": ToolSpec(
         exec="ev.x",
+        takes_prefix=False,
         required=(),
         optional=("input_from",),
         description="Calculate elastic constants and bulk modulus from vc-relax outputs",
