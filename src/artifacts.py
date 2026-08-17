@@ -483,3 +483,45 @@ def cleanup_scratch(run_dir: Path) -> int:
     except Exception:
         pass
     return freed
+
+
+def sweep_stale_scratch(root: str, min_age_s: int) -> tuple:
+    """Clean QE intermediates from run directories left behind by dead workers.
+
+    Per-job cleanup covers every normal terminal path, but not a pod that is
+    OOM-killed or evicted mid-run — and since each worker's directory is keyed by
+    its hostname, a restarted pod never revisits its predecessor's leftovers. So
+    this sweeps the whole root.
+
+    Only touches directories older than `min_age_s`. A job cannot outlive
+    JOB_TIMEOUT_S (assistant-mode gates auto-continue after 10 minutes each), so
+    with a margin this cannot race a run that is still going.
+
+    Returns (dirs_cleaned, bytes_freed).
+    """
+    import time as _time
+    base = Path(root)
+    if not base.is_dir():
+        return (0, 0)
+    cutoff = _time.time() - min_age_s
+    cleaned = 0
+    freed = 0
+    try:
+        # layout: <root>/<worker>/<YYYY-MM-DD>/<run>/
+        for run_dir in base.glob("*/*/*"):
+            if not run_dir.is_dir() or run_dir.is_symlink():
+                continue
+            if not (run_dir / "run_meta.json").exists():
+                continue
+            try:
+                if run_dir.stat().st_mtime > cutoff:
+                    continue
+            except OSError:
+                continue
+            got = cleanup_scratch(run_dir)
+            if got:
+                cleaned += 1
+                freed += got
+    except Exception:
+        pass
+    return (cleaned, freed)
