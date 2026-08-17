@@ -1,0 +1,32 @@
+Creating a ubuntu server in my mac mini
+=========================================
+step -1: install ssh server
+---------
+sudo apt update
+sudo apt install openssh-server
+
+Why: installs the SSH server so you can log into the Mac mini remotely from your laptop.
+
+step-2: enable and start SSH
+------
+sudo systemctl enable --now ssh
+Why: makes SSH start automatically now and after every reboot.
+
+
+step-3: check if ssh is running
+-------
+systemctl status ssh
+
+Why: confirms the Mac mini is actually accepting SSH connections.
+
+
+step-4: Find the Mac mini’s IP address
+--------
+hostname -I
+
+step-5: login to the ubuntu server from my laptop
+--------
+ssh ktalit@192.168.0.164
+it will ask password for the user.
+
+============================================

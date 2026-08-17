@@ -1,5 +1,10 @@
 # TritonDFT
 
+> **Installing the interactive client on a cluster?** Follow the
+> [cluster installation and checkpoint guide](CLUSTER_INSTALL.md). It documents
+> the proven Python 3.11 solution to the earlier pymatgen/GCC failure and the
+> checks to perform before repeating any expensive installation step.
+
 ## 1. Setup
 ```
 pip install -r requirements.txt
@@ -60,8 +65,78 @@ Refer to the QE documentation in `Doc/`, the package-specific `*/Doc/` folders, 
 
 ## Running the agent
 1. Export the APIs you need (OpenAI + Materials Project). Either run `export OPENAI_API_KEY=...` and `export MP_API_KEY=...` manually or reuse the commands you placed in `test/env_setup.sh`.
-2. Ensure the QE binaries you built reside in `QuantumE/bin` (the default path used inside `DFTAgent.py`). Update `self.qe_bin_prefix`/`self.pseudo_dir` there if your layout differs.
+2. For local execution, ensure the QE binaries you built reside in `QuantumE/bin` (the default path used inside `DFTAgent.py`). Update `self.qe_bin_prefix`/`self.pseudo_dir` there if your layout differs. Desktop-to-cluster package mode does not require local QE binaries.
 3. Execute the sample workflow: `python test/new_test.py`. The script initializes `DFTAgent`, submits a Si relaxation → SCF → NSCF request, and logs outputs to `evaluation.log` so you can verify that the full stack is wired correctly.
+
+### Desktop-to-cluster workflow
+For users who should not install Quantum ESPRESSO locally, initialize the agent with `run_mode="cluster_package"`. In this mode the agent still generates QE input files on the local desktop, but it does not call `pw.x`, `mpirun`, or `sbatch` locally. Instead it writes Slurm scripts beside the generated inputs in the run directory:
+
+```python
+agent = DFTAgent(
+    model="gpt-4o",
+    run_mode="cluster_package",
+)
+```
+
+The generated `slurm_job_*.sh` files assume the cluster environment can expose QE with `module load quantum-espresso`. If your cluster requires an explicit remote binary directory, set `remote_qe_bin_dir` in `config/config.yaml`; otherwise leave it empty so the script runs `pw.x`, `bands.x`, etc. from the cluster `PATH`.
+
+After this package step, an SSH transport layer can upload the run directory to the cluster, run `sbatch slurm_job_*.sh` remotely, and fetch `output_*.out` back for parsing.
+
+### Interactive SSH cluster agent
+Use `src/cluster_agent.py` when you want the agent to keep talking to the
+cluster between workflow steps. It first prints and saves the complete plan,
+including why every step is needed, then generates all requested QE inputs
+before running anything. A tabbed approval window shows the plan and every
+editable input file. No SSH connection or Slurm submission starts until
+`Approve & Run` is selected.
+
+Slurm scripts are deliberately not generated during this approval phase.
+After approval, TritonDFT uses deterministic resource fallbacks and the user's
+site-specific Slurm template. It does not run shortened copies of relaxation,
+SCF, NSCF, bands, or phonon calculations as resource probes; every submitted
+scientific job is part of the requested workflow.
+
+For workflows beginning with `vc-relax`, later `pw.x` files show a
+`TRITONDFT_RELAXED_STRUCTURE_PLACEHOLDER` during review. After relaxation,
+TritonDFT replaces that marker with the final `CELL_PARAMETERS` and
+`ATOMIC_POSITIONS` immediately before the dependent file is uploaded. The
+approved pre-execution versions are retained under `approved_inputs/` in the
+run directory.
+
+```bash
+bash scripts/run_cluster_agent.sh
+```
+
+On the first run for each Linux user, TritonDFT checks that the user's own
+cluster setup exists. If `~/.tritondft/.env.cluster` is missing, incomplete, or
+points to an SSH alias that is not present in that user's `~/.ssh/config`,
+TritonDFT asks for the cluster nickname, login hostname, cluster user id, and
+remote working directory. It then creates/reuses that user's SSH config entry,
+writes the cluster defaults to `~/.tritondft/.env.cluster`, and asks the user to
+add `OPENAI_API_KEY` and `MP_API_KEY` before continuing.
+
+Each user should keep their own Slurm example script at
+`~/.tritondft/example_slurm_job_file.txt` and edit it with their cluster's
+normal account, partition, submission header, and module commands. TritonDFT
+uses that file as the safe site-specific base and only replaces the walltime,
+Slurm task count, executable, input, output, and QE launch command for each
+generated job. On first run, if the user-local template is missing, TritonDFT
+copies the shared `example_slurm_job_file.txt` there as a starting point.
+
+The `.env.cluster` file is ignored by Git because it can contain API keys. The
+`CLUSTER_AGENT_SSH_TARGET` value can be an alias from `~/.ssh/config` or
+`user@hostname`.
+The agent asks for the remote parent directory at startup and before each DFT
+request; use a scratch/project path where your cluster user has write
+permission, such as `/scratch/$USER/qe_jobs`.
+The agent opens a persistent SSH ControlMaster connection by default so repeated
+uploads, submissions, queue checks, and downloads reuse the same login session.
+If `module load quantum-espresso` does not expose `pw.x` on the cluster `PATH`,
+add `--remote-qe-bin-dir /path/to/qe/bin`.
+The agent chooses the Slurm walltime and parallel launch settings from the
+generated QE input.
+Any command-line option still overrides the value from `.env.cluster`.
+Type `exit` or `quit` at the `DFT request>` prompt to stop the loop.
 
 ## [Optional] Deploy Backend in Dokcer
 ```

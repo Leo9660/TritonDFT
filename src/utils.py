@@ -1,6 +1,8 @@
 import json
 import re
 import os
+import shutil
+from pathlib import Path
 from typing import Optional, Any, Dict, List, Tuple
 
 def get_qe_prefix(self):
@@ -62,6 +64,7 @@ def patch_qe_input_file(
     pp_dir: Optional[str] = None,          # replace the 3rd column .UPF file with pp_dir/original-filename
     pp_map: Optional[Dict[str, str]] = None,  # species name -> pseudopotential file path (absolute or relative)
     pp_dir_clean: Optional[bool] = False,
+    force_new_step: bool = False,
     new_cutoffs: Optional[Dict[str, str]] = None,   # {"ecutwfc": "80", "ecutrho": "320"}
 ) -> None:
     """
@@ -96,6 +99,8 @@ def patch_qe_input_file(
         text = _replace_key(text, "pseudo_dir", new_pseudo_dir)
     if new_outdir:
         text = _replace_key(text, "outdir", new_outdir)
+    if force_new_step and re.search(r"(?mi)^\s*restart_mode\s*=", text):
+        text = _replace_key(text, "restart_mode", "from_scratch")
     # Force a single prefix across every step of a run. QE chains steps through
     # <outdir>/<prefix>.save: nscf/bands read the SCF charge density from it, and
     # bands.x reads the bands run's wavefunctions from it. Each step's input is
@@ -243,8 +248,75 @@ def validate_pseudos_exist(in_path: str) -> Tuple[None, Optional[str]]:
     return None, None
 
 
+def package_pseudos_for_remote(
+    input_paths: List[str],
+    *,
+    pseudo_dir: str,
+    work_dir: str,
+    package_dir_name: str = "pseudos",
+) -> List[str]:
+    """
+    Copy only the pseudopotentials referenced by generated QE inputs into the
+    run directory and patch inputs to use a relative pseudo_dir.
+
+    Cluster jobs cannot see absolute paths from the local desktop, so remote
+    packages must be self-contained:
+
+        run_dir/input_*.in
+        run_dir/slurm_job_*.sh
+        run_dir/pseudos/*.upf
+    """
+    package_dir = Path(work_dir) / package_dir_name
+    package_dir.mkdir(parents=True, exist_ok=True)
+
+    copied: List[str] = []
+    for input_path in input_paths:
+        for pp_name in _qe_input_pseudo_filenames(input_path):
+            src = Path(pp_name)
+            if not src.is_absolute():
+                src = Path(pseudo_dir) / pp_name
+            if not src.is_file():
+                raise FileNotFoundError(f"Could not package pseudopotential: {src}")
+            dest = package_dir / src.name
+            if not dest.exists():
+                shutil.copy2(src, dest)
+                copied.append(str(dest))
+
+        patch_qe_input_file(
+            input_path,
+            new_pseudo_dir=f"./{package_dir_name}",
+            pp_dir_clean=True,
+        )
+
+    return copied
+
+
+def _qe_input_pseudo_filenames(in_path: str) -> List[str]:
+    with open(in_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    species_end_keys = re.compile(
+        r"^\s*(ATOMIC_POSITIONS|K_POINTS|CELL_PARAMETERS|ATOMIC_FORCES|OCCUPATIONS|CONSTRAINTS|&\w+)\b",
+        re.IGNORECASE,
+    )
+    in_species = False
+    pp_files: List[str] = []
+    for raw in text.splitlines():
+        if not in_species:
+            if re.match(r"^\s*ATOMIC_SPECIES\b", raw, re.IGNORECASE):
+                in_species = True
+            continue
+        if not raw.strip() or species_end_keys.match(raw):
+            break
+        tokens = raw.split("#", 1)[0].strip().split()
+        if len(tokens) >= 3 and tokens[2].lower().endswith(".upf"):
+            pp_files.append(os.path.basename(tokens[2]))
+    return pp_files
+
+
 def parse_scripts_block(generated: str) -> list[str]:
-    # parse multiple <script>...</script> directly from the model output
+    # Prefer explicit <script>...</script> tags when the model follows the
+    # prompt exactly.
     scripts = re.findall(
         r"<script>(.*?)</script>|<script>(.*?)<\\script>",
         generated,
@@ -255,11 +327,84 @@ def parse_scripts_block(generated: str) -> list[str]:
     normalized = [(s[0] if s[0] else s[1]).strip() for s in scripts]
 
     if not normalized:
-        raise ValueError("No <script>...</script> blocks found in model output.")
+        normalized = _fallback_script_blocks(generated)
 
     normalized = [s.replace("\\n", "\n") for s in normalized]
 
     return normalized
+
+
+def _fallback_script_blocks(generated: str) -> list[str]:
+    text = (generated or "").strip()
+    if not text:
+        raise ValueError("No <script>...</script> blocks found in model output.")
+
+    fence_matches = re.findall(r"```(?:[a-zA-Z0-9_-]+)?\s*(.*?)```", text, flags=re.DOTALL)
+    candidates = [_extract_qe_input_region(m) for m in fence_matches]
+    candidates = [c for c in candidates if c]
+    if candidates:
+        return candidates
+
+    json_candidates = _extract_qe_inputs_from_json(text)
+    if json_candidates:
+        return json_candidates
+
+    unescaped = text.replace("\\n", "\n").replace('\\"', '"')
+    extracted = _extract_qe_input_region(unescaped)
+    if extracted:
+        return [extracted]
+
+    raise ValueError("No <script>...</script> blocks found in model output.")
+
+
+def _looks_like_qe_input(text: str) -> bool:
+    return bool(
+        re.search(r"(?mi)^\s*&(?:control|system|electrons|ions|cell|inputpp|input|dos|bands)\b", text)
+        or re.search(r"(?mi)^\s*(ATOMIC_SPECIES|K_POINTS|ATOMIC_POSITIONS)\b", text)
+    )
+
+
+def _extract_qe_inputs_from_json(text: str) -> list[str]:
+    try:
+        obj = json.loads(text)
+    except Exception:
+        return []
+
+    found: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            extracted = _extract_qe_input_region(value.replace("\\n", "\n").replace('\\"', '"'))
+            if extracted:
+                found.append(extracted)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+
+    visit(obj)
+    return found
+
+
+def _extract_qe_input_region(text: str) -> Optional[str]:
+    if not text:
+        return None
+
+    marker = re.search(
+        r"(?mi)^\s*(?:&(?:control|system|electrons|ions|cell|inputpp|input|inputph|dos|bands|projwfc)\b|"
+        r"ATOMIC_SPECIES\b|ATOMIC_POSITIONS\b|K_POINTS\b)",
+        text,
+    )
+    if not marker:
+        return None
+
+    candidate = text[marker.start():].strip()
+    candidate = re.split(r"(?mi)^\s*(?:</?scripts?>|</?script>|```)\s*$", candidate)[0].strip()
+    if _looks_like_qe_input(candidate):
+        return candidate
+    return None
 
 
 def write_inputs(
@@ -506,11 +651,14 @@ def get_qe_result(
     input_paths: list,
     verbose: bool = False,
     subproblem_id: Optional[int] = None,
+    output_paths: Optional[list] = None,
 ) -> list:
     input_text = []
     output_text = []
     for idx, in_path in enumerate(input_paths, start=1):
-        if subproblem_id is None:
+        if output_paths and idx <= len(output_paths):
+            out_path = output_paths[idx - 1]
+        elif subproblem_id is None:
             out_path = os.path.join(work_dir, f"output_{idx}.out")
         else:
             out_path = os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out")
@@ -541,9 +689,10 @@ def parse_plan_string(s: str) -> List[Dict[str, Any]]:
     """
     Parse a plan string containing <subproblemN>...</subproblemN> blocks.
     Each block must explicitly include lines starting with:
-    Problem:, Tool:, Required input:, Sweep:
+    Problem:, Tool:, Required input:. ``Why:`` and ``Sweep:`` are optional
+    for compatibility with plans generated by older models.
     
-    Returns a list of dicts with keys: id, problem, tool, input, sweep.
+    Returns a list of dicts with keys: id, problem, tool, input, why, sweep.
     """
     subproblems = []
     pattern = re.compile(r"<subproblem(\d+)>(.*?)</subproblem\1>", re.DOTALL | re.IGNORECASE)
@@ -554,7 +703,7 @@ def parse_plan_string(s: str) -> List[Dict[str, Any]]:
         lines = [line.strip() for line in body.splitlines() if line.strip()]
 
         # Defaults
-        problem, tool, req_input, sweep = None, None, None, None
+        problem, tool, req_input, why, sweep = None, None, None, None, None
 
         for line in lines:
             if line.lower().startswith("problem:"):
@@ -563,6 +712,8 @@ def parse_plan_string(s: str) -> List[Dict[str, Any]]:
                 tool = line.split(":", 1)[1].strip()
             elif line.lower().startswith("required input:"):
                 req_input = line.split(":", 1)[1].strip()
+            elif line.lower().startswith("why:"):
+                why = line.split(":", 1)[1].strip()
             elif line.lower().startswith("sweep:"):
                 sweep = line.split(":", 1)[1].strip()
 
@@ -571,6 +722,7 @@ def parse_plan_string(s: str) -> List[Dict[str, Any]]:
             "problem": problem,
             "tool": tool,
             "input": req_input,
+            "why": why,
             "sweep": sweep
         })
 

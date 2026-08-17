@@ -1,0 +1,38 @@
+#!/bin/bash
+# Example Slurm submission file for TritonDFT super users.
+#
+# Edit the cluster-specific lines below for your supercomputer:
+#   - partition / queue
+#   - account / allocation
+#   - module loads
+#   - any site-specific environment setup
+#
+# TritonDFT will reuse this file as the base template and replace only:
+#   - #SBATCH --nodes
+#   - #SBATCH --tasks-per-node
+#   - #SBATCH -t / --time
+#   - #SBATCH -o / --output
+#   - #SBATCH -e / --error
+#   - the QE executable/input/output command block at the bottom
+
+#SBATCH --partition=shared
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH -t 00:10:00
+#SBATCH -o qe.out
+#SBATCH -e qe.err
+#SBATCH --export=ALL
+#SBATCH --account=TG-PHY250365
+#SBATCH --job-name=tritondft-qe
+
+module reset
+module load cpu/0.15.4 
+module load gcc/9.2.0
+module load openmpi
+module load quantum-espresso
+
+# TritonDFT generated execution block
+exe=pw.x
+INPUT=input.in
+OUTPUT=output.out
+mpirun -np 1 $exe -in $INPUT > $OUTPUT

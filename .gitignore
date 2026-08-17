@@ -6,7 +6,10 @@ job_*
 k8s/secret.yaml
 k8s/postgres.yaml
 build.log
+install-checkpoints/
 .env
+.env.cluster
+tmp
 
 # Secret-bearing local files — NEVER commit these.
 env_setup.sh

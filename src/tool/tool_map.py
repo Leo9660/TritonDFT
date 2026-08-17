@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 from evaluate.relax_eval import run_relax_metrics, run_relax_metrics_input
 from evaluate.scf_eval import run_scf_metrics, run_scf_metrics_input
-from prompt.tool_requirements import get_bandsx_requirement, get_dosx_requirement, get_pw_requirement, get_ph_requirement, get_evx_requirement
+from prompt.tool_requirements import get_bandsx_requirement, get_dosx_requirement, get_projwfc_requirement, get_pw_requirement, get_ph_requirement, get_evx_requirement
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -136,7 +136,8 @@ FN_MAP: Dict[str, ToolSpec] = {
         required=(),
         optional=("input_from", "lsym", "emax", "emin", "delta_e", "kresolved"),
         description="Projected DOS / band character postprocessing",
-        section="&projwfc (minimal). Requires wavefunction file(s) from pw.x SCF/NSCF."
+        section="&projwfc (minimal). Requires wavefunction file(s) from pw.x SCF/NSCF.",
+        requirement_key="projwfc",
     ),
     "pp_post": ToolSpec(
         exec="pp.x",
@@ -272,6 +273,8 @@ def build_tool_requirements(fn_spec: ToolSpec, pseudo_dirs) -> str:
         return get_bandsx_requirement()
     if fn_spec.requirement_key == "dos":
         return get_dosx_requirement()
+    if fn_spec.requirement_key == "projwfc":
+        return get_projwfc_requirement()
     if fn_spec.requirement_key == "ph":
         return get_ph_requirement()
     if fn_spec.requirement_key == "evx":

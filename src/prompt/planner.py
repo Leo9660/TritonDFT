@@ -17,12 +17,13 @@ _OUTPUT_RULES = """
     Output requirements:
     - Decompose the user query into 1..N subproblems.
     - Each subproblem must be wrapped as <subproblem1>...</subproblem1>, <subproblem2>...</subproblem2>, etc. (in order).
-    - Each subproblem must contain exactly three fields:
+    - Each subproblem must contain exactly four fields:
     Problem: What to calculate
     Tool: Tool to use
     Required input: Required input parameters (Do not give any concrete parameter value here, just describe what is needed)
+    Why: Why this step is necessary and what later step or requested result depends on it
     These fields MUST appear on separate lines, each separated by a newline; otherwise, the output is considered incorrect.
-    - Keep each subproblem short (2-3 lines).
+    - Keep each subproblem short (exactly the four required field lines).
     - Do not output anything outside <subproblem> blocks.
 
     Tool vocabulary — the `Tool:` field MUST be exactly one of these names.
@@ -32,6 +33,15 @@ _OUTPUT_RULES = """
     make sure every step's prerequisites are produced by an earlier step. If the
     query asks for something this tool set cannot actually produce, plan the
     closest thing it CAN produce rather than misusing a tool.
+
+    Workflow correctness rules:
+    - Use `pw_bands` for an explicit high-symmetry electronic path, followed by `bands_post`.
+    - Use a separate dense uniform-grid `pw_nscf` for DOS/PDOS, followed by `dos_post` and, when requested, `projwfc_post`.
+    - Use `matdyn_post` only after a uniform-q-grid phonon calculation and `q2r_post`. Use `dynmat_post` for a single-q dynamical matrix.
+    - If both phonon dispersion and Gamma Raman are requested, make the uniform q-grid and Gamma-only Raman calculations distinct; the Gamma calculation must explicitly request Raman response.
+    - Produce one minimal executable workflow. Do not add optional duplicate branches or convergence sweeps unless the user requests them.
+    - Preserve relevant scientific choices across dependent steps: dimensionality, phase, exchange-correlation and vdW treatment, magnetism, SOC, DFT+U, pseudopotential compatibility, cutoffs, and orbital projections.
+    - Treat SOC according to the supplied scientific assessment. When SOC is needed only for final electronic properties, relax scalar-relativistically and use SOC in the final SCF and dependent electronic steps.
 """
 
 planner_messages = {
@@ -57,12 +67,14 @@ planner_messages = {
     Problem: Relax the cell and atomic positions to obtain the equilibrium structure
     Tool: pw_vc_relax
     Required input: initial fcc Al structure
+    Why: Obtain the equilibrium geometry required for the requested total energy
     </subproblem1>
 
     <subproblem2>
     Problem: Do an SCF calculation to obtain the converged total energy
     Tool: pw_scf
     Required input: relaxed structure from the vc_relax step
+    Why: Calculate the requested total energy on the equilibrium structure
     </subproblem2>
     ---
 
@@ -103,6 +115,7 @@ planner_messages_no_force = {
     Problem: Do an SCF calculation to obtain the converged total energy
     Tool: pw_scf
     Required input: fcc Al structure
+    Why: Calculate the requested total energy using the supplied fixed geometry
     </subproblem1>
     ---
 
