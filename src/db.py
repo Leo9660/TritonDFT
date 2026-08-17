@@ -101,6 +101,10 @@ class Job(Base):
     worker_id = Column(String)                  # which worker pod claimed it
     model = Column(String)                      # OpenAI model to run this job with
     script_only = Column(Boolean, default=False, nullable=False)  # generate inputs, skip CPU execution
+    # Experimental: render plots (band/DOS/PDOS/phonon) and surface extracted
+    # values like the band gap. Off by default — the parsers are new and a wrong
+    # plot is worse than no plot.
+    plots = Column(Boolean, default=False, nullable=False)
     run_dir = Column(Text)                      # absolute path to the agent's run directory (on the PVC)
     result = Column(JSON)                       # extracted key values (material, energy, band gap, ...)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -139,6 +143,7 @@ def _run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS plan JSON",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pending_plan JSON",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS plan_action JSON",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS plots BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS model TEXT",
     ]
     with engine.begin() as conn:
