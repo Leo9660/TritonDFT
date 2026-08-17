@@ -176,8 +176,13 @@ FN_MAP: Dict[str, ToolSpec] = {
         description="Process a SINGLE-q dynamical matrix from ph.x (e.g. Gamma) into "
                     "frequencies and eigenvectors. Use this (NOT matdyn_post) when you have "
                     "a ph.x .dynG / .dyn file for one q-point and no q2r.x step.",
-        section="&input namelist. fildyn must point at the ph.x output dynamical matrix "
-                "file (e.g. prefix.dynG for Gamma)."
+        section="&input namelist. fildyn must point at an ACTUAL dynamical-matrix file on "
+                "disk. Note the ph.x naming convention: when ph.x ran with ldisp=.true. it "
+                "APPENDS a q-point index to its fildyn value, writing <fildyn>0 (a summary), "
+                "<fildyn>1, <fildyn>2, ... — one per q-point, with <fildyn>1 being the first "
+                "q-point (Gamma for a Gamma-centred mesh). Point dynmat.x at the indexed file "
+                "(e.g. 'si.dyn1'), NOT at the bare fildyn value ph.x was given ('si.dyn'), "
+                "which does not exist. Check the file listing above and use a name from it."
     ),
     "pw_phonon_gamma": ToolSpec(
         exec="ph.x",
