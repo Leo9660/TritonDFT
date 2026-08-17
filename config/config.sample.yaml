@@ -4,3 +4,9 @@ pseudo:
   PBE: /path/to/PBE_standard
   PBEsol: /path/to/PBEsol_standard
 qe_bin_dir: /path/to/QuantumE/bin
+
+# Optional. Used only when packaging jobs for remote Slurm execution.
+# Leave empty when the cluster's "module load quantum-espresso" exposes pw.x,
+# bands.x, dos.x, etc. on PATH. Set to a remote cluster path such as
+# /apps/quantum-espresso/bin if your cluster requires it.
+remote_qe_bin_dir: ""

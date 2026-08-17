@@ -41,8 +41,10 @@ pw_requirement_template = """
         1. Do NOT specify smearing or degauss.
 
     [band calculations]
-    - nbnd (CRITICAL): when calculation = 'nscf' OR 'bands', you MUST set nbnd to
-      the number of occupied Kohn-Sham states + 10. Without it pw.x computes only
+    - nbnd (CRITICAL): when calculation = 'nscf' OR 'bands', you MUST include
+      enough empty states. Use occupied Kohn-Sham states + 16 by default (preserve
+      a larger user value). Occupied states are ceil(nelec/2) for collinear
+      calculations, but ceil(nelec) for noncollinear/SOC calculations. Without it pw.x computes only
       the occupied bands, so there is NO conduction band and neither a band gap
       nor a band structure can be obtained.
     - This pipeline gives the two run types separate jobs. Quantum ESPRESSO itself
@@ -121,17 +123,17 @@ pw_requirement_template = """
     - Do NOT enumerate every k-point explicitly.
 
     [Material-specific considerations]
-    - Based on the materials, you should choose whether to use Van der Waals correction or not.
-    - Based on the material properties, choose whether to use magnetic moments, spin polarization, spin-orbit coupling.
+    - Dynamically decide whether vdW, magnetism, spin-orbit coupling, or DFT+U is relevant from the requested phase, dimensionality, material, and observable. Do not use fixed material-specific defaults.
+    - When one of these choices is relevant, make its scope explicit and preserve it exactly within dependent steps of that branch. Do not force an electronic-only SOC refinement into vc-relax or the scalar-relativistic baseline. A SOC branch reuses geometry but requires its own fully relativistic SCF/save state.
+    - A vdW choice is a complete contract: preserve vdw_corr, dftd3_version, damping/version semantics, dftd3_threebody, and any explicitly supplied D3/TS/XDM parameters exactly across relaxation and all electronic branches.
+    - A bulk request must remain three-dimensionally periodic: do not add slab vacuum, dipole corrections, or isolated-boundary settings.
+    - For AFM/ferrimagnetic order, remember that opposite initial moments on atoms of the same element may require distinct QE species labels that reference the same pseudopotential.
+    - SOC requires compatible fully relativistic pseudopotentials and consistent noncollinear/SOC settings throughout the dependent workflow.
     - Remember that we need to use fully relativistic pseudopotentials when including spin-orbit coupling.
 
-    [DFT+U / Hubbard corrections — Quantum ESPRESSO v7.3 syntax (CRITICAL)]
-    - This is QE v7.3.1. The pre-v7.1 DFT+U keywords are OBSOLETE and cause a FATAL
-      error ("DFT+Hubbard input syntax has changed since v7.1"). Therefore:
-        * Do NOT put lda_plus_u, lda_plus_u_kind, Hubbard_U(i), Hubbard_J(i),
-          U_projection_type, or Hubbard_alpha(i) in &SYSTEM. NEVER use them.
-    - Instead, specify Hubbard U with a HUBBARD card placed AFTER the namelists
-      (alongside ATOMIC_SPECIES / ATOMIC_POSITIONS / K_POINTS), format:
+    [DFT+U / Hubbard corrections — version-sensitive]
+    - Hubbard input syntax is version-sensitive. Use the remote QE version supplied in workflow memory; never assume the local package version equals the cluster version.
+    - QE 7.1 and newer use a HUBBARD card placed AFTER the namelists, format:
         HUBBARD (ortho-atomic)
         U <species>-<manifold> <value_in_eV>
       Example for Fe 3d with U = 4.5 eV:
@@ -140,8 +142,9 @@ pw_requirement_template = """
     - The projector in parentheses is the Hubbard projector type; prefer
       'ortho-atomic' (use 'atomic' only if orthogonalization is problematic).
     - The manifold is element-symbol + orbital (e.g. Fe-3d, Mn-3d, Ni-3d, Ce-4f, V-3d).
-    - starting_magnetization, nspin, occupations etc. stay in &SYSTEM as usual —
-      only the +U keywords moved to the HUBBARD card.
+    - QE 6.7 and older use the legacy lda_plus_u/Hubbard_U(i) &SYSTEM syntax and do not accept the new HUBBARD card.
+    - If the remote version is unknown and DFT+U is required, explicitly record that version compatibility must be confirmed by the remote parser probe. Never mix old and new syntax in one input.
+    - starting_magnetization, nspin, and occupations stay in &SYSTEM for all supported versions.
 
     [Numeric values — literals only (CRITICAL)]
     - NEVER write an arithmetic expression as an input value. Fortran namelist
@@ -202,8 +205,31 @@ dosx_requirement_template = """
 
     [Output]
     - Always set fildos='<prefix>.dos' (or a fixed name 'dos.dat').
-    - bz_sum='smearing' is recommended for metallic systems or general usage.
+    - Emin, Emax, and DeltaE are in eV. Unless the user explicitly requests a
+      narrower energy interval, use a conservative full-DOS window of
+      Emin=-15.0 eV, Emax=10.0 eV, and DeltaE=0.01 eV. Never convert these
+      three values to Ry and never generate a total window narrower than 5 eV.
+    - bz_sum MUST match the dense NSCF integration family exactly:
+        * occupations='tetrahedra'     -> bz_sum='tetrahedra'
+        * occupations='tetrahedra_lin' -> bz_sum='tetrahedra_lin'
+        * occupations='tetrahedra_opt' -> bz_sum='tetrahedra_opt'
+        * occupations='smearing' or 'fixed' -> bz_sum='smearing'
+    - Do not set ngauss or degauss when bz_sum is a tetrahedron method.
     - Do NOT include &projwfc or any other namelists. Only &DOS.
+"""
+
+projwfc_requirement_template = """
+    ### Minimal Rules (hard constraints)
+    [Purpose]
+    - projwfc.x reads dense uniform-grid NSCF wavefunctions and produces atomic-orbital projections for PDOS aggregation.
+    [Input]
+    - Output exactly one &PROJWFC namelist and no other namelists or prose.
+    - Set prefix and outdir to exactly the dense DOS NSCF values.
+    - Set filpdos='<prefix>.pdos' so downstream code can discover QE's per-atom/per-wavefunction files.
+    - Set DeltaE in eV at a resolution appropriate for the requested plot.
+    [Spin/orbitals]
+    - projwfc.x writes all available atomic-wavefunction projections. Downstream deterministic aggregation separates the user-requested species and orbital channels.
+    - Preserve the NSCF spin, SOC, Hubbard, pseudopotential, and magnetic-species setup through the shared prefix/outdir state.
 """
 
 ph_requirement_template = """
@@ -262,8 +288,14 @@ ph_requirement_template = """
     - asr may be set to enforce the acoustic sum rule. NOTICE: asr is a LOGICAL flag (.true. or .false.) in ph.x.
     - recover may be enabled to allow restart of interrupted runs.
 
+    [Raman and dielectric response]
+    - The valid Quantum ESPRESSO keyword is lraman, never raman.
+    - If this subproblem explicitly requests Raman coefficients, it MUST be a separate Gamma calculation with lraman=.true., ldisp=.false., trans=.true., and the Gamma q point after the namelist.
+    - A uniform ldisp q-grid for phonon dispersion does not replace the separate Gamma Raman response calculation.
+    - Use epsil=.true. for the appropriate nonmetal Gamma dielectric/Born-charge response when IR properties are requested; do not enable it blindly for metals.
+
     [Forbidden features unless explicitly requested]
-    - Do NOT set raman=.true. unless Raman intensities are explicitly required.
+    - Do NOT set lraman=.true. unless Raman coefficients are explicitly required by this subproblem.
     - Do NOT set elph=.true. unless electron-phonon coupling is explicitly required.
 """
 
@@ -439,6 +471,9 @@ def get_bandsx_requirement() -> str:
 
 def get_dosx_requirement() -> str:
     return dosx_requirement_template.strip()
+
+def get_projwfc_requirement() -> str:
+    return projwfc_requirement_template.strip()
 
 def get_ph_requirement() -> str:
     return ph_requirement_template.strip()

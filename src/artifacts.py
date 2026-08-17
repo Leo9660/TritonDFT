@@ -16,14 +16,14 @@ from pathlib import Path
 # intermediates (*.wfc*, *.save/, *.mix*, etc.).
 USEFUL_EXTS = {
     ".in", ".out", ".xml", ".json", ".band", ".gnu",
-    ".dat", ".txt", ".log", ".cif", ".csv",
+    ".dat", ".txt", ".log", ".cif", ".csv", ".png",
     ".sh",   # run_all.sh — the runner emitted for script-only bundles
 }
 # Internal bookkeeping files surfaced elsewhere (result cards / Analysis section)
 # — hide them from the user-facing file list and zip.
 HIDDEN_FILES = {"analysis.json", "run_meta.json"}
-# Everything we whitelist is plain text → safe to preview inline.
-TEXT_EXTS = USEFUL_EXTS
+# Binary plot artifacts are downloadable but must not be previewed as text.
+TEXT_EXTS = USEFUL_EXTS - {".png"}
 
 RY_TO_EV = 13.605693
 

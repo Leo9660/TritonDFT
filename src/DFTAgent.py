@@ -17,9 +17,57 @@ from execute_code.slurm import SlurmLauncher
 from tool import get_spec, fetch_material_info_from_api_snippet, build_tool_requirements, is_allowed_fn
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
 parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file, \
-validate_pseudos_exist, read_qe_cutoffs
+validate_pseudos_exist, package_pseudos_for_remote, read_qe_cutoffs
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
+from validation import remove_undocumented_namelist_keywords, validate_qe_input
+
+
+def _generate_nonempty_text(
+    generator,
+    prompt: str,
+    *,
+    max_new_tokens: int,
+    attempts: int = 3,
+    verbose: bool = False,
+    purpose: str = "generation",
+) -> str:
+    """Retry transient empty model responses without changing the prompt."""
+    last_error: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = generator(
+                prompt,
+                max_new_tokens=max_new_tokens,
+                return_full_text=False,
+            )
+        except Exception as exc:
+            last_error = exc
+            if verbose:
+                print(f"[{purpose}] model call {attempt}/{attempts} failed: {exc}")
+        else:
+            text = ""
+            if result and isinstance(result, list):
+                text = result[0].get("generated_text", "") or ""
+            if text.strip():
+                return text
+            if verbose:
+                print(
+                    f"[{purpose}] model returned an empty response "
+                    f"({attempt}/{attempts}); retrying the same prompt."
+                )
+        if attempt < attempts:
+            time.sleep(attempt)
+
+    if last_error is not None:
+        raise RuntimeError(
+            f"{purpose} failed after {attempts} model calls; last error: {last_error}"
+        ) from last_error
+    raise RuntimeError(
+        f"{purpose} returned empty text after {attempts} model calls. "
+        f"The output-token budget was {max_new_tokens}."
+    )
+
 
 
 class JobCancelled(Exception):
@@ -52,7 +100,7 @@ class DFTAgent:
         auto_parallel: bool = False,
         parallel_exec: bool = False,
         parallel_np: int = 1,
-        run_mode: str = "mpirun", # "mpirun", "local", "slurm"
+        run_mode: str = "mpirun", # "mpirun", "local", "slurm", "cluster_input", "cluster_package"
         auto_confirm: bool = False,
         hardware_description: Optional[str] = None,
         benchmark: bool = False,
@@ -86,7 +134,7 @@ class DFTAgent:
         self.hardware_description = hardware_description
         self.benchmark = benchmark
         self.benchmark_file = benchmark_file
-        valid_run_modes = {"mpirun", "local", "slurm"}
+        valid_run_modes = {"mpirun", "local", "slurm", "cluster_input", "cluster_package"}
         if run_mode not in valid_run_modes:
             raise ValueError(f"run_mode must be one of {valid_run_modes}.")
         self.run_mode = run_mode
@@ -95,6 +143,7 @@ class DFTAgent:
         self.pseudo_dirs = self.config.pseudo
         self.pseudo_dir = self.config.pseudo.PBE
         self.qe_bin_prefix = self.config.qe_bin_dir
+        self.remote_qe_bin_prefix = self.config.remote_qe_bin_dir
         
         self.generator = UnifiedGenerator(
             backend=backend,
@@ -139,6 +188,117 @@ class DFTAgent:
 
         if self.verbose:
             print(f"[DFTAgent] Initialized with model={model}, dft_tool={dft_tool}, work_dir_root={self.work_dir_root}")
+
+    @staticmethod
+    def _assessment_enables_soc(assessment: Any) -> bool:
+        if not assessment:
+            return False
+        if isinstance(assessment, dict):
+            guesses = assessment.get("parameter_guesses") or {}
+            lspinorb = guesses.get("lspinorb")
+            if lspinorb is True or str(lspinorb).lower() in {"true", ".true.", "yes", "on"}:
+                return True
+            policy = assessment.get("soc_policy") or {}
+            if str(policy.get("classification", "")).lower() == "required":
+                return True
+            decisions = assessment.get("scientific_decisions") or {}
+            soc = decisions.get("soc") or {}
+            choice = str(soc.get("choice", soc)).lower()
+            if any(term in choice for term in ("off", "not used", "without soc", "disabled", "omit")):
+                return False
+            return any(term in choice for term in ("enabled", "include", "with soc", "lspinorb = true"))
+        return False
+
+    def select_pseudo_dir(
+        self,
+        request: str,
+        assessment: Any = None,
+        *,
+        update: bool = True,
+        target_scope: str = "step",
+    ) -> str:
+        """Select an XC/SOC-compatible library from explicit request or scoped assessment."""
+        text = request or ""
+        needs_soc = (
+            self._assessment_enables_soc(assessment)
+            if assessment
+            else bool(re.search(r"\bSOC\b|spin[- ]orbit", text, re.I))
+        )
+        if target_scope == "baseline" and isinstance(assessment, dict):
+            policy = assessment.get("soc_policy") or {}
+            if str(policy.get("scope", "")).lower() == "electronic_only":
+                needs_soc = False
+        if re.search(r"\b(?:pbe\s*sol|pbesol)\b", text, re.I):
+            selected = self.pseudo_dirs.PBESOL_FR if needs_soc else self.pseudo_dirs.PBESOL
+        elif re.search(r"\b(?:lda|local[ -]density approximation)\b", text, re.I):
+            if needs_soc:
+                raise ValueError(
+                    "SOC with LDA was requested, but no fully relativistic LDA pseudopotential "
+                    "library is configured. Configure one instead of substituting PBE."
+                )
+            selected = self.pseudo_dirs.LDA
+        elif re.search(r"\bpbe\b|perdew[- ]burke[- ]ernzerhof", text, re.I):
+            selected = self.pseudo_dirs.PBE_FR if needs_soc else self.pseudo_dirs.PBE
+        else:
+            selected = self.pseudo_dirs.PBE_FR if needs_soc else self.pseudo_dirs.PBE
+        if update:
+            self.pseudo_dir = selected
+        return selected
+
+    def analyze_workflow_intent(self, query: str) -> Dict[str, Any]:
+        """Produce an auditable scientific strategy before planning or input generation."""
+        prompt = f"""You are the scientific design reviewer for an automated DFT workflow.
+Assess the user's complete request before any execution plan is written. Return one JSON object only.
+Give concise conclusions and physical reasons, not private chain-of-thought.
+
+Separate settings that must remain invariant from choices that legitimately vary by stage or branch.
+In particular:
+- Keep XC, chemical composition, phase, pseudopotential identity within a branch, energy cutoffs,
+  magnetism, Hubbard model, and structure provenance consistent unless an explicit branch changes them.
+- K-point *policy* must be consistent, but meshes legitimately differ: relaxation/SCF use compatible
+  uniform meshes, DOS/NSCF may be denser, and bands require an explicit symmetry path.
+- Decide vdW from dimensionality/bonding and its effect on the requested structure.
+- SOC is not automatically a relaxation setting merely because bands are requested. Classify SOC as
+  not_needed, optional_refinement, or required. Give its scope as none, electronic_only, or
+  entire_workflow. Generic structure/bands/gap/DOS requests should receive a scalar-relativistic
+  baseline unless SOC-sensitive splitting, topology, spin texture, magnetic anisotropy, optical
+  fine structure, or an explicit SOC request makes it required. An electronic-only SOC refinement
+  must reuse geometry but use a separate fully relativistic SCF/save-state branch.
+- The executable plan must contain one recommended electronic workflow. If SOC is an optional but
+  scientifically worthwhile refinement for the requested final band result, set
+  recommended_for_requested_result=true so the planner uses the SOC final SCF/bands instead of
+  generating duplicate scalar and SOC results. Optional alternatives must never become extra jobs.
+- State whether scalar-relativistic or fully relativistic pseudopotentials are needed for each branch.
+- Identify assumptions or user decisions that should be visible at approval.
+
+Required schema:
+{{
+  "summary": "short scientific strategy",
+  "material_phase": "...",
+  "requested_observables": ["..."],
+  "stage_strategy": [{{"stage": "...", "soc": "on|off", "vdw": "...", "reason": "..."}}],
+  "soc_policy": {{"classification": "not_needed|optional_refinement|required", "scope": "none|electronic_only|entire_workflow", "recommended_for_requested_result": true, "reason": "..."}},
+  "pseudopotential_policy": [{{"branch": "baseline|soc_refinement", "relativity": "scalar|fully_relativistic", "xc": "..."}}],
+  "invariants": ["..."],
+  "stage_specific_parameters": ["..."],
+  "approval_questions": ["..."]
+}}
+
+User request:
+{query}
+"""
+        raw = _generate_nonempty_text(
+            self.generator,
+            prompt,
+            max_new_tokens=max(self.max_new_tokens, 4096),
+            attempts=3,
+            verbose=self.verbose,
+            purpose="scientific_assessment",
+        )
+        assessment = extract_json_brutal(raw)
+        if not isinstance(assessment, dict) or not assessment.get("summary"):
+            raise ValueError("Scientific assessment did not return the required JSON strategy.")
+        return assessment
 
     @staticmethod
     def _sanitize_name(name: str, max_len: int = 40) -> str:
@@ -528,6 +688,9 @@ class DFTAgent:
         try:
             params_out = self.generator(prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
             params_json = params_out[0]['generated_text']
+            # Normalize to actual JSON so scientific decisions can be audited
+            # and later steps receive machine-readable workflow memory.
+            params_json = json.dumps(extract_json_brutal(params_json), ensure_ascii=False)
             # Don't dump the raw parameter JSON into the streamed log — it is a
             # multi-line LLM blob the user can't act on, and the values that
             # matter end up in the generated input file anyway (downloadable).
@@ -548,6 +711,12 @@ class DFTAgent:
             }
         
         acc_script_gen_time += (time.perf_counter() - t0)
+
+        step_pseudo_dir = self.select_pseudo_dir(
+            f"{query}\n{subproblem.get('problem', '')}",
+            extract_json_brutal(params_json),
+            update=False,
+        )
 
         fn_spec = get_spec(subproblem['tool'])
         if fn_spec is None:
@@ -574,7 +743,7 @@ class DFTAgent:
                     bin_tool=fn_spec.exec,
                     tool_mode=fn_spec.mode if fn_spec.mode else "standard",
                     params_json=params_json,
-                    upf_dir=self.pseudo_dir,
+                    upf_dir=step_pseudo_dir,
                     previous_run=error_code,
                     previous_memory=total_memory,
                     previous_inputs="\n\n".join(self._run_inputs),
@@ -592,7 +761,7 @@ class DFTAgent:
                     bin_tool=fn_spec.exec,
                     tool_mode=fn_spec.mode if fn_spec.mode else "standard",
                     params_json=params_json,
-                    upf_dir=self.pseudo_dir,
+                    upf_dir=step_pseudo_dir,
                     previous_memory=total_memory,
                     previous_inputs="\n\n".join(self._run_inputs),
                     available_files=self._available_files(),
@@ -605,32 +774,37 @@ class DFTAgent:
                     tool_requirements=tool_requirements
                 )
 
-            script_out = self.generator(script_prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
-            generated_scripts = script_out[0]['generated_text']
+            script_token_budget = max(self.max_new_tokens, 8192)
+            generated_scripts = _generate_nonempty_text(
+                self.generator,
+                script_prompt[0]["content"],
+                max_new_tokens=script_token_budget,
+                attempts=3,
+                verbose=self.verbose,
+                purpose="script_generation",
+            )
             if self.verbose:
                 print(f"[solve_sub_problem] Script generated (Loop {loop_count})")
 
-            # A malformed model response is a transient formatting failure, not a
-            # dead end — retry it like any other bad output instead of letting the
-            # exception escape and kill the whole job several steps in.
             try:
                 scripts = parse_scripts_block(generated_scripts)
-            except ValueError as e:
-                if loop_count >= MAX_LOOPS:
-                    raise ValueError(
-                        f"Could not solve the subproblem! The model never returned a "
-                        f"usable <scripts> block ({e})."
-                    )
+            except ValueError as exc:
+                debug_path = Path(self.work_dir) / f"script_generation_failed_{subproblem.get('id', problem_id)}_{loop_count}.txt"
+                debug_path.write_text(generated_scripts or "", encoding="utf-8")
                 if self.verbose:
-                    print(f"[solve_sub_problem][warn] unparseable model output, retrying: {e}")
+                    print(f"[solve_sub_problem][error] Raw generated script saved to {debug_path}")
+                if loop_count >= MAX_LOOPS:
+                    raise
                 error_code += (
-                    "\nYour previous response contained no <scripts>...</scripts> block. "
-                    "Return ONLY the required <scripts><script>...</script></scripts> "
-                    "structure, with no commentary.\n\n"
+                    "Script generation failed before execution: "
+                    f"{exc}. The previous model output was empty or did not contain a usable QE input. "
+                    "Retry by outputting exactly one <scripts> block containing one or more "
+                    "<script>...</script> QE input files for only the current subproblem. "
+                    "Do not output JSON, Markdown fences, explanations, or analysis text.\n\n"
                 )
+                acc_script_gen_time += (time.perf_counter() - t_script_start)
                 continue
-
-
+            
             # Work Dir setup & Write Inputs
             work_dir = self.work_dir
             os.makedirs(work_dir, exist_ok=True)
@@ -640,9 +814,15 @@ class DFTAgent:
             # Patch Inputs
             missing_pseudo_err: Optional[str] = None
             for path in input_paths:
-                patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
-                                    new_prefix=self._run_prefix if fn_spec.takes_prefix else None,
-                                    pp_dir_clean=True, new_cutoffs=self._run_cutoffs)
+                patch_qe_input_file(
+                    path,
+                    new_pseudo_dir=step_pseudo_dir,
+                    new_outdir=self.out_dir,
+                    new_prefix=self._run_prefix,
+                    pp_dir_clean=True,
+                    force_new_step=False,
+                    new_cutoffs=self._run_cutoffs,
+                )
                 # The first pw.x step of a run fixes the cutoffs every later step
                 # must reuse — they all read the same charge density.
                 if not self._run_cutoffs and fn_spec.exec == "pw.x":
@@ -664,6 +844,46 @@ class DFTAgent:
                     raise ValueError(f"Could not solve the subproblem! {missing_pseudo_err}")
                 error_code += f"Pseudo missing: {missing_pseudo_err}\n\n"
                 params_json = json.dumps({"hint": missing_pseudo_err})
+                continue
+
+            # Treat generated text as a proposal. Deterministic validation
+            # catches syntax/card/mode errors and feeds exact repair guidance
+            # back to the same model before any input reaches approval.
+            deterministic_repairs = []
+            for path in input_paths:
+                deterministic_repairs.extend(
+                    remove_undocumented_namelist_keywords(path, fn_spec.exec)
+                )
+            if deterministic_repairs and self.verbose:
+                print(
+                    "[solve_sub_problem][deterministic-repair] "
+                    + "; ".join(deterministic_repairs)
+                )
+            validation_issues = []
+            for path in input_paths:
+                validation_issues.extend(
+                    validate_qe_input(
+                        path,
+                        tool=subproblem["tool"],
+                        query=subproblem.get("problem", ""),
+                    )
+                )
+            blocking_input_issues = [issue for issue in validation_issues if issue.blocking]
+            if blocking_input_issues:
+                validation_feedback = "\n".join(issue.format() for issue in blocking_input_issues)
+                if self.verbose:
+                    print(f"[solve_sub_problem][validation] rejected generated input:\n{validation_feedback}")
+                if loop_count >= MAX_LOOPS:
+                    raise ValueError(
+                        "Could not generate a valid input after "
+                        f"{MAX_LOOPS} attempts:\n{validation_feedback}"
+                    )
+                error_code += (
+                    "Deterministic input validation failed. Correct every issue below without "
+                    "changing the requested scientific purpose or shared workflow settings:\n"
+                    f"{validation_feedback}\n\n"
+                )
+                acc_parse_validate_time += time.perf_counter() - t_script_start
                 continue
 
             # Input Eval (if enabled)
@@ -752,6 +972,77 @@ class DFTAgent:
                     "result_json": "",
                     "result_judge": "script_only",
                     "details": f"Generated {len(input_paths)} inputs.",
+                    "timing": {
+                        "script_gen_s": acc_script_gen_time,
+                        "parse_validate_s": acc_parse_validate_time,
+                        "dft_run_s": acc_dft_run_time,
+                    },
+                    "evaluation": None,
+                }
+
+            if self.run_mode in {"cluster_input", "cluster_package"}:
+                output_paths = [
+                    os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out")
+                    for idx in range(1, len(input_paths) + 1)
+                ]
+                if self.run_mode == "cluster_input":
+                    return {
+                        "status": "cluster_input",
+                        "result_json": "",
+                        "result_judge": "cluster_input",
+                        "details": f"Generated {len(input_paths)} QE input file(s) for approval.",
+                        "input_paths": [str(p) for p in input_paths],
+                        "slurm_paths": [],
+                        "output_paths": output_paths,
+                        "pseudo_paths": [],
+                        "params_json": params_json,
+                        "pseudo_dir": step_pseudo_dir,
+                        "tool": subproblem["tool"],
+                        "exec_name": fn_spec.exec,
+                        "parse_requirement_key": fn_spec.parse_requirement_key,
+                        "subproblem_id": subproblem_id,
+                        "work_dir": str(work_dir),
+                        "timing": {
+                            "script_gen_s": acc_script_gen_time,
+                            "parse_validate_s": acc_parse_validate_time,
+                            "dft_run_s": acc_dft_run_time,
+                        },
+                        "evaluation": None,
+                    }
+
+                packaged_pseudos = package_pseudos_for_remote(
+                    input_paths,
+                    pseudo_dir=step_pseudo_dir,
+                    work_dir=work_dir,
+                )
+                slurm_paths = self.slurm_launcher.package(
+                    exec_name=fn_spec.exec,
+                    qe_prefix=self.remote_qe_bin_prefix,
+                    input_paths=input_paths,
+                    work_dir=work_dir,
+                    parallel_exec=self.parallel_exec,
+                    parallel_np=self.parallel_np,
+                    output_paths=output_paths,
+                    hardware_description=self.hardware_description,
+                )
+                return {
+                    "status": "cluster_package",
+                    "result_json": "",
+                    "result_judge": "cluster_package",
+                    "details": (
+                        f"Generated {len(input_paths)} QE input file(s) and "
+                        f"{len(slurm_paths)} Slurm script(s) for remote cluster execution."
+                    ),
+                    "input_paths": [str(p) for p in input_paths],
+                    "slurm_paths": slurm_paths,
+                    "output_paths": output_paths,
+                    "pseudo_paths": packaged_pseudos,
+                    "params_json": params_json,
+                    "tool": subproblem["tool"],
+                    "exec_name": fn_spec.exec,
+                    "parse_requirement_key": fn_spec.parse_requirement_key,
+                    "subproblem_id": subproblem_id,
+                    "work_dir": str(work_dir),
                     "timing": {
                         "script_gen_s": acc_script_gen_time,
                         "parse_validate_s": acc_parse_validate_time,
@@ -1155,6 +1446,9 @@ class DFTAgent:
                 run_id=run_id,
                 category=category,
             )
+
+        # Freeze one XC-consistent pseudopotential library for this workflow.
+        self.select_pseudo_dir(query)
             
         if self.output_log:
             output_to_log_file(self.work_dir_root, self.output_log_file, f"###[Starting new run for query]: {query}\n", new=False)
@@ -1281,6 +1575,15 @@ class DFTAgent:
                 # no results to carry forward; later steps still see earlier
                 # INPUTS via previous_inputs.
                 continue
+
+            if isinstance(sub_problem_res, dict) and sub_problem_res.get("status") in {
+                "cluster_input",
+                "cluster_package",
+            }:
+                self._write_analysis(
+                    "Cluster preparation run: generated the Quantum ESPRESSO input file(s) "
+                    "locally without executing Quantum ESPRESSO on this desktop.", query)
+                return sub_problem_res
 
             # Update Memory
             total_memory += f" Subproblem {i+1}:\n System Results:\n {sub_problem_res.get('result_json','')} \n"
