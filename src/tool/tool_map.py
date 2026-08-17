@@ -176,7 +176,8 @@ FN_MAP: Dict[str, ToolSpec] = {
         description="Process a SINGLE-q dynamical matrix from ph.x (e.g. Gamma) into "
                     "frequencies and eigenvectors. Use this (NOT matdyn_post) when you have "
                     "a ph.x .dynG / .dyn file for one q-point and no q2r.x step.",
-        section="&input namelist. fildyn must point at an ACTUAL dynamical-matrix file on "
+        section="The namelist is literally named &input (NOT &dynmat / &DYNMAT). "
+                "fildyn must point at an ACTUAL dynamical-matrix file on "
                 "disk. Note the ph.x naming convention: when ph.x ran with ldisp=.true. it "
                 "APPENDS a q-point index to its fildyn value, writing <fildyn>0 (a summary), "
                 "<fildyn>1, <fildyn>2, ... — one per q-point, with <fildyn>1 being the first "
@@ -258,6 +259,12 @@ def normalize_tool(tool: str) -> str:
 def build_tool_requirements(fn_spec: ToolSpec, pseudo_dirs) -> str:
     """
     Map a tool's requirement key to its textual requirements.
+
+    Tools without a requirement_key fall back to their `section` text. That field
+    was previously passed to the script prompt as `fn_section`, which the template
+    does not render — so q2r.x, matdyn.x, dynmat.x, projwfc.x and pp.x were being
+    generated with NO format guidance at all, and the model invented namelist
+    names ('&DYNMAT' instead of '&input') and filenames on every run.
     """
     if fn_spec.requirement_key == "pw":
         return get_pw_requirement(pseudo_dirs)
@@ -269,4 +276,9 @@ def build_tool_requirements(fn_spec: ToolSpec, pseudo_dirs) -> str:
         return get_ph_requirement()
     if fn_spec.requirement_key == "evx":
         return get_evx_requirement()
+    if fn_spec.section:
+        return ("### Requirements for this tool\n"
+                f"    - Executable: {fn_spec.exec}\n"
+                f"    - {fn_spec.section}\n"
+                "    - Output ONLY the input file contents, no commentary.")
     return ""
