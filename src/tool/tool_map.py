@@ -161,7 +161,12 @@ FN_MAP: Dict[str, ToolSpec] = {
         description="Phonon frequencies / DOS along paths (DISPERSION post-processing only). "
                     "Reads real-space force constants (flfrc) produced by q2r.x. "
                     "Do NOT use this for a single-q (e.g. Gamma-only) ph.x output — use dynmat_post instead.",
-        section="&input (minimal). Reads real-space force constants from q2r.x output."
+        section="&input namelist. Reads real-space force constants (flfrc) from q2r.x. "
+                "To get a smooth dispersion you MUST set q_in_band_form=.true. and then give "
+                "the number of path nodes followed by lines of 'qx qy qz npts'; without that "
+                "flag matdyn.x treats those lines as isolated q-points, ignores the npts "
+                "column, and emits only a handful of frequencies instead of a curve. "
+                "Set flfrq to the frequency output file."
     ),
     "dynmat_post": ToolSpec(
         exec="dynmat.x",
