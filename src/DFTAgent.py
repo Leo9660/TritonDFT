@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import os
+import shutil
 import datetime
 import time
 
@@ -591,8 +592,8 @@ class DFTAgent:
             missing_pseudo_err: Optional[str] = None
             for path in input_paths:
                 patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
-                                    new_prefix=self._run_prefix, pp_dir_clean=True,
-                                    new_cutoffs=self._run_cutoffs)
+                                    new_prefix=self._run_prefix if fn_spec.takes_prefix else None,
+                                    pp_dir_clean=True, new_cutoffs=self._run_cutoffs)
                 # The first pw.x step of a run fixes the cutoffs every later step
                 # must reuse — they all read the same charge density.
                 if not self._run_cutoffs and fn_spec.exec == "pw.x":
@@ -669,8 +670,8 @@ class DFTAgent:
                     # Re-apply path/prefix patching so QE still finds pseudos & outdir.
                     for path in input_paths:
                         patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
-                                            new_prefix=self._run_prefix, pp_dir_clean=True,
-                                            new_cutoffs=self._run_cutoffs)
+                                            new_prefix=self._run_prefix if fn_spec.takes_prefix else None,
+                                            pp_dir_clean=True, new_cutoffs=self._run_cutoffs)
 
             # Record this step's FINAL inputs (post-patch, post-user-edit) so later
             # steps can see them. Truncating to the entry-time mark first keeps a
@@ -712,7 +713,14 @@ class DFTAgent:
 
             # --- DFT Execution Phase ---
             t_dft_start = time.perf_counter()
-            
+
+            # Branch off the pristine SCF state rather than whatever the previous
+            # step left in <prefix>.save (see _snapshot_scf_state).
+            if fn_spec.exec == "ph.x" or (
+                fn_spec.exec == "pw.x" and fn_spec.mode in self._SCF_BRANCH_MODES
+            ):
+                self._restore_scf_state()
+
             qe_prefix = get_qe_prefix(self)
             output_paths = [os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out") for idx in range(1, len(input_paths) + 1)]
             auto_parallel = self.auto_parallel and fn_spec.mode == "vc-relax"
@@ -738,6 +746,11 @@ class DFTAgent:
                 )
                 # Successful execution block end
                 acc_dft_run_time += (time.perf_counter() - t_dft_start)
+
+                # The SCF is what every later branch starts from — checkpoint it
+                # while it is still pristine.
+                if fn_spec.exec == "pw.x" and fn_spec.mode == "scf":
+                    self._snapshot_scf_state()
 
             except TimeoutError as exc:
                 # Capture time even on failure
@@ -864,6 +877,61 @@ class DFTAgent:
         except Exception:
             pass
         return s
+
+    # ── SCF state checkpointing ───────────────────────────────────────────────
+    # Every step of a run shares one prefix, so they also share one <prefix>.save.
+    # That is required for chaining (bands.x must read the bands run's
+    # wavefunctions) but it breaks BRANCHING workflows: a DOS-oriented nscf with
+    # occupations='tetrahedra' rewrites the saved state, and a later ph.x reading
+    # it dies with "DFPT with the Blochl correction is not implemented".
+    #
+    # So the SCF state is treated as a checkpoint. Steps that branch off the SCF
+    # (nscf, bands, ph.x) restore it first, instead of inheriting whatever the
+    # previous step happened to leave behind. Post-processing steps (bands.x,
+    # dos.x, q2r.x, ...) consume the step immediately before them and must NOT
+    # restore.
+    _SCF_BRANCH_MODES = {"nscf", "bands"}
+
+    def _scf_state_paths(self):
+        save = self.work_dir / f"{self._run_prefix}.save"
+        xml = self.work_dir / f"{self._run_prefix}.xml"
+        ckpt = self.work_dir / ".scf_checkpoint"
+        return save, xml, ckpt
+
+    def _snapshot_scf_state(self) -> None:
+        save, xml, ckpt = self._scf_state_paths()
+        if not save.is_dir():
+            return
+        try:
+            if ckpt.exists():
+                shutil.rmtree(ckpt)
+            ckpt.mkdir(parents=True)
+            shutil.copytree(save, ckpt / save.name)
+            if xml.exists():
+                shutil.copy2(xml, ckpt / xml.name)
+            if self.verbose:
+                print("[solve_sub_problem] SCF state checkpointed.")
+        except OSError as e:
+            if self.verbose:
+                print(f"[solve_sub_problem][warn] could not checkpoint SCF state: {e}")
+
+    def _restore_scf_state(self) -> None:
+        save, xml, ckpt = self._scf_state_paths()
+        src_save = ckpt / save.name
+        if not src_save.is_dir():
+            return
+        try:
+            if save.exists():
+                shutil.rmtree(save)
+            shutil.copytree(src_save, save)
+            src_xml = ckpt / xml.name
+            if src_xml.exists():
+                shutil.copy2(src_xml, xml)
+            if self.verbose:
+                print("[solve_sub_problem] Restored the SCF state for this branch.")
+        except OSError as e:
+            if self.verbose:
+                print(f"[solve_sub_problem][warn] could not restore SCF state: {e}")
 
     # Steps whose input embeds a geometry that only exists AFTER an earlier
     # relaxation has actually been run. In a script-only bundle nothing was run,
