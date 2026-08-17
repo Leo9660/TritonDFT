@@ -273,3 +273,165 @@ def build_zip(run_dir: Path) -> bytes:
                 pass
     buf.seek(0)
     return buf.getvalue()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generic plot data (experimental)
+#
+# Deliberately shape-driven, not property-driven: QE's text outputs collapse to
+# two forms, so DOS, projected DOS, phonon dispersion and anything similar added
+# later are covered without a per-property parser.
+#
+#   A) commented XY table   "# E (eV)  dos(E)  Int dos(E)"  + numeric rows
+#   B) multi-branch curves  band.gnu blocks, or matdyn's "&plot nbnd=,nks=/"
+#
+# No LLM involved: every label lives in the header line or the filename.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _read_xy_table(path: Path):
+    """Parse a commented numeric table into {x_label, series, rows}."""
+    header, rows = None, []
+    try:
+        for ln in path.read_text(errors="ignore").splitlines():
+            s = ln.strip()
+            if not s:
+                continue
+            if s.startswith("#"):
+                if header is None:
+                    header = s.lstrip("#").strip()
+                continue
+            try:
+                rows.append([float(t) for t in s.split()])
+            except ValueError:
+                pass
+    except OSError:
+        return None
+    if not rows:
+        return None
+    ncol = min(len(r) for r in rows)
+    # QE writes the Fermi level into the same comment line; pull it out so it can
+    # be drawn as a reference line instead of being mistaken for a column name.
+    fermi = None
+    if header:
+        m = re.search(r"EFermi\s*=\s*(-?\d+\.\d+)", header)
+        if m:
+            fermi = float(m.group(1))
+            header = header[:m.start()].strip()
+    labels = re.findall(r"[A-Za-z][\w ]*\([^)]*\)|[A-Za-z]\w*", header or "")
+    x_label = labels[0] if labels else "x"
+    series = labels[1:ncol] or [f"col{i}" for i in range(1, ncol)]
+    return {"x_label": x_label, "series": series, "e_fermi": fermi,
+            "rows": [r[:ncol] for r in rows]}
+
+
+_PDOS_RE = re.compile(r"pdos_atm#(\d+)\(([A-Za-z]+)\d*\)_wfc#(\d+)\(([spdfSPDF])", re.IGNORECASE)
+
+
+def parse_dos(run_dir: Path):
+    """Total DOS from dos.x, plus projected DOS from projwfc.x grouped by
+    (element, orbital) — which is exactly the "separate Mo-d from S-p" view,
+    derived from filenames rather than from any per-material code."""
+    out = {}
+
+    tot = next(iter(sorted(run_dir.glob("*.dos"))), None)
+    if tot is not None:
+        t = _read_xy_table(tot)
+        if t:
+            out["total"] = {
+                "x_label": t["x_label"],
+                "e_fermi": t["e_fermi"],
+                # column 1 is dos(E); column 2 is the running integral, not useful here
+                "points": [[r[0], r[1]] for r in t["rows"] if len(r) > 1],
+            }
+
+    groups = {}
+    for f in sorted(run_dir.glob("*pdos_atm*")):
+        m = _PDOS_RE.search(f.name)
+        if not m:
+            continue
+        key = f"{m.group(2)}-{m.group(4).lower()}"
+        t = _read_xy_table(f)
+        if not t:
+            continue
+        # ldos(E) is column 1: the total for this atom+shell.
+        for r in t["rows"]:
+            if len(r) < 2:
+                continue
+            groups.setdefault(key, {})
+            groups[key][round(r[0], 4)] = groups[key].get(round(r[0], 4), 0.0) + r[1]
+    if groups:
+        out["projected"] = [
+            {"label": k, "points": sorted([[e, v] for e, v in pts.items()])}
+            for k, pts in sorted(groups.items())
+        ]
+    return out or None
+
+
+def parse_phonons(run_dir: Path):
+    """Phonon dispersion from matdyn.x flfrq output.
+
+    Format: '&plot nbnd=N, nks=M /' then, per q-point, a coordinate line
+    followed by the N frequencies. Same shape as a band structure, so the
+    frontend renders it with the band plot.
+    """
+    src = None
+    for pattern in ("*.freq", "*.phbands", "*freq*"):
+        cand = [p for p in sorted(run_dir.glob(pattern)) if p.is_file()]
+        for c in cand:
+            head = ""
+            try:
+                head = c.read_text(errors="ignore")[:200]
+            except OSError:
+                continue
+            if "&plot" in head and "nbnd" in head:
+                src = c
+                break
+        if src:
+            break
+    if src is None:
+        return None
+
+    try:
+        text = src.read_text(errors="ignore")
+    except OSError:
+        return None
+    m = re.search(r"nbnd\s*=\s*(\d+)\s*,\s*nks\s*=\s*(\d+)", text)
+    if not m:
+        return None
+    nbnd, nks = int(m.group(1)), int(m.group(2))
+
+    nums = []
+    for ln in text.splitlines()[1:]:
+        for tok in ln.split():
+            try:
+                nums.append(float(tok))
+            except ValueError:
+                pass
+    # Each q-point contributes 3 coordinates followed by nbnd frequencies.
+    stride = 3 + nbnd
+    if len(nums) < stride:
+        return None
+    branches = [[] for _ in range(nbnd)]
+    x = 0.0
+    prev = None
+    for i in range(min(nks, len(nums) // stride)):
+        chunk = nums[i * stride:(i + 1) * stride]
+        q = chunk[:3]
+        if prev is not None:
+            x += sum((a - b) ** 2 for a, b in zip(q, prev)) ** 0.5
+        prev = q
+        for b in range(nbnd):
+            branches[b].append([x, chunk[3 + b]])
+    allf = [v for br in branches for (_, v) in br]
+    if not allf:
+        return None
+    return {
+        "bands": branches,
+        "n_bands": nbnd,
+        "e_min": min(allf),
+        "e_max": max(allf),
+        "k_min": 0.0,
+        "k_max": branches[0][-1][0] if branches[0] else 0.0,
+        "e_fermi": None,
+        "unit": "cm-1",
+    }

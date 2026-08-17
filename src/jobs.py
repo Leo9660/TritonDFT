@@ -35,6 +35,7 @@ class CreateJobBody(BaseModel):
     model: Optional[str] = None
     script_only: Optional[bool] = None
     mode: Optional[str] = None   # "auto" (default) | "assistant" (human-in-the-loop)
+    plots: Optional[bool] = None   # experimental: render plots + extracted values
 
 
 class StepActionBody(BaseModel):
@@ -139,6 +140,7 @@ async def create_job(
         model=model,
         script_only=script_only,
         mode=mode,
+        plots=bool(body.plots),
     )
     db.add(job)
     db.commit()
@@ -152,6 +154,7 @@ async def create_job(
         "model": model,
         "script_only": script_only,
         "mode": mode,
+        "plots": bool(body.plots),
     }
 
 
@@ -176,11 +179,15 @@ async def get_job(
         "queue_position": _queue_position(db, job) if job.status == "queued" else None,
         "credits_remaining": user.credits,
         "created_at": job.created_at.isoformat() if job.created_at else None,
-        "result": job.result,
+        # The gap/energy cards come from the same experimental extraction as the
+        # plots, so they are gated together: with plots off the user gets the log
+        # and the downloadable files, nothing inferred.
+        "result": job.result if job.plots else None,
         "has_artifacts": bool(job.run_dir),
         "model": job.model,
         "script_only": bool(job.script_only),
         "mode": job.mode or "auto",
+        "plots": bool(job.plots),
         # The step + generated scripts awaiting the user's review (assistant mode).
         "pending_step": job.pending_step if job.status == "awaiting_approval" else None,
         # The plan awaiting review (assistant mode), and the plan itself (both modes).
@@ -350,9 +357,37 @@ async def get_job_bands(
 ):
     job = _owned_job(job_id, user, db)
     run_dir = artifacts.safe_run_dir(job.run_dir)
-    if run_dir is None:
+    if run_dir is None or not job.plots:
         return {"bands": None}
     return {"bands": artifacts.parse_bands(run_dir)}
+
+
+@router.get("/{job_id}/dos")
+async def get_job_dos(
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Total and projected DOS (experimental)."""
+    job = _owned_job(job_id, user, db)
+    run_dir = artifacts.safe_run_dir(job.run_dir)
+    if run_dir is None or not job.plots:
+        return {"dos": None}
+    return {"dos": artifacts.parse_dos(run_dir)}
+
+
+@router.get("/{job_id}/phonons")
+async def get_job_phonons(
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Phonon dispersion from matdyn.x (experimental)."""
+    job = _owned_job(job_id, user, db)
+    run_dir = artifacts.safe_run_dir(job.run_dir)
+    if run_dir is None or not job.plots:
+        return {"phonons": None}
+    return {"phonons": artifacts.parse_phonons(run_dir)}
 
 
 @router.get("/{job_id}/download")
