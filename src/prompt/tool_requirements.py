@@ -259,8 +259,26 @@ ph_requirement_template = """
     - If you use ldisp = .false., you MUST append the q-point coordinates (e.g., '0.0 0.0 0.0') after the namelist.
 
     [Convergence]
-    - You MUST set tr2_ph (DFPT self-consistency threshold).
-    - tr2_ph should be stricter than the SCF electronic convergence.
+    - You MUST set tr2_ph (DFPT self-consistency threshold). Use 1.0d-12, the
+      Quantum ESPRESSO default, unless the query explicitly asks for higher
+      accuracy.
+    - Do NOT try to make tr2_ph "stricter than conv_thr": they measure different
+      things (tr2_ph is a threshold on the perturbed charge density, conv_thr on
+      the total energy), so there is no ordering to respect. Chasing conv_thr
+      pushes tr2_ph to values like 1.0d-14, which triples the run time for no
+      gain in the phonon frequencies.
+
+    [Cost budget — phonons are the most expensive step by far]
+    - A DFPT run costs roughly 40x an SCF *per irreducible q-point*, and jobs here
+      run under a wall-clock limit. Measured on 2-atom silicon: a 4x4x4 q-mesh did
+      not finish in 30 minutes, while a 2x2x2 mesh completed in 23 seconds and
+      still reproduced the 520 cm-1 optical mode.
+    - Default to nq1=nq2=nq3=2 for a dispersion. q2r.x + matdyn.x interpolate the
+      force constants onto a fine q-path afterwards, so a small mesh still yields
+      a smooth dispersion curve. Only go denser if the query explicitly asks for a
+      converged/high-accuracy phonon calculation.
+    - For a Gamma-only calculation (stability check, Raman/IR mode listing) use
+      nq1=nq2=nq3=1 — do not run a full mesh.
 
     [Outputs]
     - You MUST set fildyn to specify the dynamical-matrix output filename.
