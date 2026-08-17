@@ -314,17 +314,25 @@ class DFTAgent:
 
         messages = get_prompt(prompt_type="planner", question=query, tool=self.dft_tool,
                               force_vc_relax=self.force_vc_relax)
-        try:
-            prompt_text = messages[0]["content"]
-            raw_out = self.generator(prompt_text, max_new_tokens=self.max_new_tokens, return_full_text=False)
-        except Exception as e:
-            if self.verbose:
-                print(f"[plan][error] model call failed: {e}")
-            return None
+        prompt_text = messages[0]["content"]
 
-        plan_dict = parse_plan_string(raw_out[0]["generated_text"])
-        self._log_plan(plan_dict)
-        return plan_dict
+        # Retry a malformed plan rather than dying: a response with no
+        # <subproblem> blocks is a transient formatting slip, and letting it
+        # escape kills the run before a single step has executed.
+        for attempt in range(1, 4):
+            try:
+                raw_out = self.generator(prompt_text, max_new_tokens=self.max_new_tokens,
+                                         return_full_text=False)
+                plan_dict = parse_plan_string(raw_out[0]["generated_text"])
+            except Exception as e:
+                if self.verbose:
+                    print(f"[plan][warn] attempt {attempt} failed: {e}")
+                continue
+            self._log_plan(plan_dict)
+            return plan_dict
+
+        print("[plan][error] could not obtain a usable plan after 3 attempts.")
+        return None
 
     @staticmethod
     def _step_meta(tool: str) -> Dict[str, str]:
@@ -550,6 +558,7 @@ class DFTAgent:
                     previous_run=error_code,
                     previous_memory=total_memory,
                     previous_inputs="\n\n".join(self._run_inputs),
+                    available_files=self._available_files(),
                     fn_section=fn_spec.section,
                     query=query,
                     initial_structures=initial_structures,
@@ -566,6 +575,7 @@ class DFTAgent:
                     upf_dir=self.pseudo_dir,
                     previous_memory=total_memory,
                     previous_inputs="\n\n".join(self._run_inputs),
+                    available_files=self._available_files(),
                     fn_section=fn_spec.section,
                     query=query,
                     initial_structures=initial_structures,
@@ -580,8 +590,27 @@ class DFTAgent:
             if self.verbose:
                 print(f"[solve_sub_problem] Script generated (Loop {loop_count})")
 
-            scripts = parse_scripts_block(generated_scripts)
-            
+            # A malformed model response is a transient formatting failure, not a
+            # dead end — retry it like any other bad output instead of letting the
+            # exception escape and kill the whole job several steps in.
+            try:
+                scripts = parse_scripts_block(generated_scripts)
+            except ValueError as e:
+                if loop_count >= MAX_LOOPS:
+                    raise ValueError(
+                        f"Could not solve the subproblem! The model never returned a "
+                        f"usable <scripts> block ({e})."
+                    )
+                if self.verbose:
+                    print(f"[solve_sub_problem][warn] unparseable model output, retrying: {e}")
+                error_code += (
+                    "\nYour previous response contained no <scripts>...</scripts> block. "
+                    "Return ONLY the required <scripts><script>...</script></scripts> "
+                    "structure, with no commentary.\n\n"
+                )
+                continue
+
+
             # Work Dir setup & Write Inputs
             work_dir = self.work_dir
             os.makedirs(work_dir, exist_ok=True)
@@ -938,6 +967,32 @@ class DFTAgent:
     # so the generated file still carries the Materials Project starting guess and
     # the user has to paste the relaxed cell in themselves.
     _RELAXING_MODES = {"relax", "vc-relax"}
+
+    # Bulk binaries a post-processor never names explicitly; listing them would
+    # only crowd out the files that matter (.dyn, .fc, .band, .save is a dir).
+    _NOISY_FILE_SUFFIXES = (".wfc", ".save", ".mix", ".upf", ".igk")
+
+    def _available_files(self) -> str:
+        """Compact listing of what is actually on disk in the run directory.
+
+        Post-processing codes are addressed by filename (fildyn, flfrc, filband),
+        so a step that has to guess what the previous one wrote gets it wrong.
+        """
+        try:
+            names = []
+            for p in sorted(self.work_dir.iterdir()):
+                if not p.is_file():
+                    continue
+                if any(s in p.name for s in self._NOISY_FILE_SUFFIXES):
+                    continue
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    size = 0
+                names.append(f"    {p.name}  ({size} bytes)")
+            return "\n".join(names)
+        except OSError:
+            return ""
 
     def _write_runner_script(self, query: str = "") -> Optional[str]:
         """Emit run_all.sh: every generated input, in order, with the manual

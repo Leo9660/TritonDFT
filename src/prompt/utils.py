@@ -126,6 +126,21 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
     else:
         kwargs["query_info"] = ""
     # ----------------------------------------
+    # --- inject header for available_files ---
+    # Post-processing codes are addressed by FILENAME (fildyn, flfrc, filband),
+    # not by prefix, and the model was guessing those names — asking dynmat.x for
+    # 'qerun.dynG0' when ph.x had actually written 'qerun.dyn1'. Show it what is
+    # really on disk instead.
+    af = kwargs.get("available_files", "")
+    if af is not None and str(af) != "":
+        kwargs["available_files"] = (
+            "\n ### Files already present in the working directory.\n"
+            " Reference these EXACT names in fildyn / flfrc / filband / input_from"
+            " style options — do not invent a filename.\n" + str(af) + "\n"
+        )
+    else:
+        kwargs["available_files"] = ""
+    # ----------------------------------------
     # --- inject header for previous_run ---
     pr = kwargs.get("previous_run", "")
     if pr is not None and str(pr) != "":

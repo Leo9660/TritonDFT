@@ -45,6 +45,8 @@ script_prompt_fixed = {
 
     {previous_inputs}
 
+    {available_files}
+
     {previous_run}
 
     Only apply targeted corrections to the script based on the errors above; do not change any other guessed parameters unnecessarily.
