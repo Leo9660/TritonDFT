@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import os
+import shutil
 import datetime
 import time
 
@@ -426,8 +427,28 @@ User request:
         if self.verbose:
             print(f"[info_query] API call snippet received: {api_call_snippet_out}")
 
-        fetch_result = fetch_material_info_from_api_snippet(api_call_snippet_out, limit=25, verbose=self.verbose)
-    
+        # The Materials Project query is the very first thing a run does, and it is
+        # an external service: a transient 5xx there killed a whole job before a
+        # single step had executed. The query is an idempotent read, so retry it
+        # with a short backoff rather than losing the run.
+        fetch_result = None
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                fetch_result = fetch_material_info_from_api_snippet(
+                    api_call_snippet_out, limit=25, verbose=self.verbose)
+                break
+            except Exception as e:
+                last_err = e
+                print(f"[info_query][warn] Materials Project query failed "
+                      f"(attempt {attempt}/3): {e}")
+                if attempt < 3:
+                    time.sleep(3 * attempt)
+        if fetch_result is None:
+            raise RuntimeError(
+                f"Could not reach the Materials Project after 3 attempts: {last_err}")
+
+
         if self.output_log:
             output_to_log_file(self.work_dir_root, self.output_log_file, f"[info_query] Retrieved material information: {fetch_result.get('material_ids', ['N/A'])[0]}")
 
@@ -473,17 +494,25 @@ User request:
 
         messages = get_prompt(prompt_type="planner", question=query, tool=self.dft_tool,
                               force_vc_relax=self.force_vc_relax)
-        try:
-            prompt_text = messages[0]["content"]
-            raw_out = self.generator(prompt_text, max_new_tokens=self.max_new_tokens, return_full_text=False)
-        except Exception as e:
-            if self.verbose:
-                print(f"[plan][error] model call failed: {e}")
-            return None
+        prompt_text = messages[0]["content"]
 
-        plan_dict = parse_plan_string(raw_out[0]["generated_text"])
-        self._log_plan(plan_dict)
-        return plan_dict
+        # Retry a malformed plan rather than dying: a response with no
+        # <subproblem> blocks is a transient formatting slip, and letting it
+        # escape kills the run before a single step has executed.
+        for attempt in range(1, 4):
+            try:
+                raw_out = self.generator(prompt_text, max_new_tokens=self.max_new_tokens,
+                                         return_full_text=False)
+                plan_dict = parse_plan_string(raw_out[0]["generated_text"])
+            except Exception as e:
+                if self.verbose:
+                    print(f"[plan][warn] attempt {attempt} failed: {e}")
+                continue
+            self._log_plan(plan_dict)
+            return plan_dict
+
+        print("[plan][error] could not obtain a usable plan after 3 attempts.")
+        return None
 
     @staticmethod
     def _step_meta(tool: str) -> Dict[str, str]:
@@ -718,6 +747,7 @@ User request:
                     previous_run=error_code,
                     previous_memory=total_memory,
                     previous_inputs="\n\n".join(self._run_inputs),
+                    available_files=self._available_files(),
                     fn_section=fn_spec.section,
                     query=query,
                     initial_structures=initial_structures,
@@ -734,6 +764,7 @@ User request:
                     upf_dir=step_pseudo_dir,
                     previous_memory=total_memory,
                     previous_inputs="\n\n".join(self._run_inputs),
+                    available_files=self._available_files(),
                     fn_section=fn_spec.section,
                     query=query,
                     initial_structures=initial_structures,
@@ -908,8 +939,8 @@ User request:
                     # Re-apply path/prefix patching so QE still finds pseudos & outdir.
                     for path in input_paths:
                         patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
-                                            new_prefix=self._run_prefix, pp_dir_clean=True,
-                                            new_cutoffs=self._run_cutoffs)
+                                            new_prefix=self._run_prefix if fn_spec.takes_prefix else None,
+                                            pp_dir_clean=True, new_cutoffs=self._run_cutoffs)
 
             # Record this step's FINAL inputs (post-patch, post-user-edit) so later
             # steps can see them. Truncating to the entry-time mark first keeps a
@@ -1022,7 +1053,14 @@ User request:
 
             # --- DFT Execution Phase ---
             t_dft_start = time.perf_counter()
-            
+
+            # Branch off the pristine SCF state rather than whatever the previous
+            # step left in <prefix>.save (see _snapshot_scf_state).
+            if fn_spec.exec == "ph.x" or (
+                fn_spec.exec == "pw.x" and fn_spec.mode in self._SCF_BRANCH_MODES
+            ):
+                self._restore_scf_state()
+
             qe_prefix = get_qe_prefix(self)
             output_paths = [os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out") for idx in range(1, len(input_paths) + 1)]
             auto_parallel = self.auto_parallel and fn_spec.mode == "vc-relax"
@@ -1048,6 +1086,11 @@ User request:
                 )
                 # Successful execution block end
                 acc_dft_run_time += (time.perf_counter() - t_dft_start)
+
+                # The SCF is what every later branch starts from — checkpoint it
+                # while it is still pristine.
+                if fn_spec.exec == "pw.x" and fn_spec.mode == "scf":
+                    self._snapshot_scf_state()
 
             except TimeoutError as exc:
                 # Capture time even on failure
@@ -1175,11 +1218,92 @@ User request:
             pass
         return s
 
+    # ── SCF state checkpointing ───────────────────────────────────────────────
+    # Every step of a run shares one prefix, so they also share one <prefix>.save.
+    # That is required for chaining (bands.x must read the bands run's
+    # wavefunctions) but it breaks BRANCHING workflows: a DOS-oriented nscf with
+    # occupations='tetrahedra' rewrites the saved state, and a later ph.x reading
+    # it dies with "DFPT with the Blochl correction is not implemented".
+    #
+    # So the SCF state is treated as a checkpoint. Steps that branch off the SCF
+    # (nscf, bands, ph.x) restore it first, instead of inheriting whatever the
+    # previous step happened to leave behind. Post-processing steps (bands.x,
+    # dos.x, q2r.x, ...) consume the step immediately before them and must NOT
+    # restore.
+    _SCF_BRANCH_MODES = {"nscf", "bands"}
+
+    def _scf_state_paths(self):
+        save = self.work_dir / f"{self._run_prefix}.save"
+        xml = self.work_dir / f"{self._run_prefix}.xml"
+        ckpt = self.work_dir / ".scf_checkpoint"
+        return save, xml, ckpt
+
+    def _snapshot_scf_state(self) -> None:
+        save, xml, ckpt = self._scf_state_paths()
+        if not save.is_dir():
+            return
+        try:
+            if ckpt.exists():
+                shutil.rmtree(ckpt)
+            ckpt.mkdir(parents=True)
+            shutil.copytree(save, ckpt / save.name)
+            if xml.exists():
+                shutil.copy2(xml, ckpt / xml.name)
+            if self.verbose:
+                print("[solve_sub_problem] SCF state checkpointed.")
+        except OSError as e:
+            if self.verbose:
+                print(f"[solve_sub_problem][warn] could not checkpoint SCF state: {e}")
+
+    def _restore_scf_state(self) -> None:
+        save, xml, ckpt = self._scf_state_paths()
+        src_save = ckpt / save.name
+        if not src_save.is_dir():
+            return
+        try:
+            if save.exists():
+                shutil.rmtree(save)
+            shutil.copytree(src_save, save)
+            src_xml = ckpt / xml.name
+            if src_xml.exists():
+                shutil.copy2(src_xml, xml)
+            if self.verbose:
+                print("[solve_sub_problem] Restored the SCF state for this branch.")
+        except OSError as e:
+            if self.verbose:
+                print(f"[solve_sub_problem][warn] could not restore SCF state: {e}")
+
     # Steps whose input embeds a geometry that only exists AFTER an earlier
     # relaxation has actually been run. In a script-only bundle nothing was run,
     # so the generated file still carries the Materials Project starting guess and
     # the user has to paste the relaxed cell in themselves.
     _RELAXING_MODES = {"relax", "vc-relax"}
+
+    # Bulk binaries a post-processor never names explicitly; listing them would
+    # only crowd out the files that matter (.dyn, .fc, .band, .save is a dir).
+    _NOISY_FILE_SUFFIXES = (".wfc", ".save", ".mix", ".upf", ".igk")
+
+    def _available_files(self) -> str:
+        """Compact listing of what is actually on disk in the run directory.
+
+        Post-processing codes are addressed by filename (fildyn, flfrc, filband),
+        so a step that has to guess what the previous one wrote gets it wrong.
+        """
+        try:
+            names = []
+            for p in sorted(self.work_dir.iterdir()):
+                if not p.is_file():
+                    continue
+                if any(s in p.name for s in self._NOISY_FILE_SUFFIXES):
+                    continue
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    size = 0
+                names.append(f"    {p.name}  ({size} bytes)")
+            return "\n".join(names)
+        except OSError:
+            return ""
 
     def _write_runner_script(self, query: str = "") -> Optional[str]:
         """Emit run_all.sh: every generated input, in order, with the manual
