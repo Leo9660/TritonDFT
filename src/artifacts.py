@@ -8,6 +8,7 @@ import io
 import os
 import re
 import json
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -435,3 +436,50 @@ def parse_phonons(run_dir: Path):
         "e_fermi": None,
         "unit": "cm-1",
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scratch cleanup
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Quantum ESPRESSO leaves large binary intermediates next to the results. They
+# are regenerable, are already excluded from the download bundle (USEFUL_EXTS),
+# and none of the parsers above read them — everything surfaced to the user comes
+# from the text outputs. On a shared 100Gi PVC with eight workers they are pure
+# accumulation, and a phonon run's _ph0 is the worst offender (tens of GB).
+_SCRATCH_DIR_PATTERNS = ("_ph0", "*.save")
+_SCRATCH_FILE_PATTERNS = ("*.wfc*", "*.mix*", "*.igk*", "*.hub*", "*.dvscf*", "*.bar*", "*.prd*")
+
+
+def cleanup_scratch(run_dir: Path) -> int:
+    """Delete QE binary intermediates from a finished run. Returns bytes freed.
+
+    MUST run only after extract_result(): it is safe for the on-demand parsers
+    (bands/DOS/phonons all read top-level text files), but the extraction step
+    reads output_*.out, which this never touches.
+    """
+    freed = 0
+    try:
+        for pattern in _SCRATCH_DIR_PATTERNS:
+            for d in run_dir.glob(pattern):
+                if not d.is_dir() or d.is_symlink():
+                    continue
+                try:
+                    for f in d.rglob("*"):
+                        if f.is_file() and not f.is_symlink():
+                            freed += f.stat().st_size
+                    shutil.rmtree(d, ignore_errors=True)
+                except OSError:
+                    pass
+        for pattern in _SCRATCH_FILE_PATTERNS:
+            for f in run_dir.glob(pattern):
+                if not f.is_file() or f.is_symlink():
+                    continue
+                try:
+                    freed += f.stat().st_size
+                    f.unlink()
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return freed
