@@ -51,6 +51,10 @@ ARTIFACT_ROOT = "/workspace/tmp"
 # assistant-mode gates auto-continue after APPROVAL_TIMEOUT_S each.
 SWEEP_MIN_AGE_S = int(os.environ.get("SWEEP_MIN_AGE_S", str(6 * 3600)))
 SWEEP_INTERVAL_S = int(os.environ.get("SWEEP_INTERVAL_S", str(3600)))
+# Delete QE binary intermediates when a job finishes. On by default for the
+# hosted service: jobs are atomic, nothing is resumed, and the PVC is shared.
+# Set CLEANUP_SCRATCH=0 to keep everything (useful when debugging a run).
+CLEANUP_SCRATCH = os.environ.get("CLEANUP_SCRATCH", "1").lower() not in ("0", "false", "no")
 
 _REAL_STDOUT = sys.stdout
 _REAL_STDERR = sys.stderr
@@ -515,7 +519,7 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
             # see has been extracted. They are regenerable, never served, and on
             # a shared PVC they only accumulate — a phonon run's _ph0 alone can
             # be tens of GB.
-            freed = cleanup_scratch(wd)
+            freed = cleanup_scratch(wd, enabled=CLEANUP_SCRATCH)
             if freed:
                 log(f"job {job_id} scratch cleaned: {freed / 1048576:.0f} MB freed")
     except Exception as e:
@@ -548,9 +552,10 @@ def main():
     init_db()  # idempotent — ensures tables exist even if worker starts first
 
     # A worker starting up is precisely when a previous pod's leftovers exist.
-    n, freed = sweep_stale_scratch(ARTIFACT_ROOT, SWEEP_MIN_AGE_S)
-    if n:
-        log(f"startup sweep: cleaned {n} stale run dir(s), {freed / 1048576:.0f} MB freed")
+    if CLEANUP_SCRATCH:
+        n, freed = sweep_stale_scratch(ARTIFACT_ROOT, SWEEP_MIN_AGE_S)
+        if n:
+            log(f"startup sweep: cleaned {n} stale run dir(s), {freed / 1048576:.0f} MB freed")
 
     agent = DFTAgent(
         model=os.environ.get("DEFAULT_MODEL", "gpt-4o"),
@@ -589,7 +594,7 @@ def main():
         if claimed is None:
             # Idle is the safe moment to sweep: nothing of ours is being written,
             # and the age threshold keeps us off other workers' live runs.
-            if time.time() - last_sweep > SWEEP_INTERVAL_S:
+            if CLEANUP_SCRATCH and time.time() - last_sweep > SWEEP_INTERVAL_S:
                 last_sweep = time.time()
                 n, freed = sweep_stale_scratch(ARTIFACT_ROOT, SWEEP_MIN_AGE_S)
                 if n:

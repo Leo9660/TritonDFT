@@ -155,19 +155,27 @@ def extract_result(run_dir: Path) -> dict:
 def _sorted_outputs(run_dir: Path):
     """Run outputs in step order.
 
-    Names are output_<step>_<n>.out, so a plain lexicographic sort puts step 10
-    before step 2. Sort on the numeric fields instead.
+    Step files are named <NN>_<task>.out (01_vc-relax.out, 07_ph.out). Older runs
+    used output_<step>_<n>.out, so both are matched; either way sort on the
+    leading numbers, since lexicographically "10" precedes "2".
     """
     def key(p: Path):
         nums = [int(x) for x in re.findall(r"\d+", p.stem)]
         return (nums, p.name)
-    return sorted(run_dir.glob("output_*.out"), key=key)
+    seen = {}
+    for pattern in ("[0-9][0-9]_*.out", "output_*.out"):
+        for f in run_dir.glob(pattern):
+            seen[f.name] = f
+    return sorted(seen.values(), key=key)
 
 
 def _calculation_of(output_path: Path) -> str:
     """The pw.x `calculation` that produced an output, read from its sibling
-    input file (output_2_1.out -> input_2_1.in). Empty string if unknown."""
-    in_path = output_path.parent / (output_path.stem.replace("output_", "input_", 1) + ".in")
+    input file. Current runs pair by name (07_ph.out -> 07_ph.in); older runs used
+    the output_/input_ prefix pair. Empty string if unknown."""
+    in_path = output_path.with_suffix(".in")
+    if not in_path.exists():
+        in_path = output_path.parent / (output_path.stem.replace("output_", "input_", 1) + ".in")
     try:
         text = in_path.read_text(errors="ignore")
     except OSError:
@@ -451,13 +459,20 @@ _SCRATCH_DIR_PATTERNS = ("_ph0", "*.save")
 _SCRATCH_FILE_PATTERNS = ("*.wfc*", "*.mix*", "*.igk*", "*.hub*", "*.dvscf*", "*.bar*", "*.prd*")
 
 
-def cleanup_scratch(run_dir: Path) -> int:
+def cleanup_scratch(run_dir: Path, enabled: bool = True) -> int:
     """Delete QE binary intermediates from a finished run. Returns bytes freed.
 
     MUST run only after extract_result(): it is safe for the on-demand parsers
     (bands/DOS/phonons all read top-level text files), but the extraction step
-    reads output_*.out, which this never touches.
+    reads the step outputs, which this never touches.
+
+    `enabled=False` makes this a no-op. The hosted website wants cleanup on — its
+    jobs are atomic and nobody resumes them — while the super-user/cluster path
+    wants it off, because _ph0 is exactly what ph.x needs for recover=.true. and
+    a failed attempt's scratch is evidence.
     """
+    if not enabled:
+        return 0
     freed = 0
     try:
         for pattern in _SCRATCH_DIR_PATTERNS:

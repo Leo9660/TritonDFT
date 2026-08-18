@@ -407,12 +407,33 @@ def _extract_qe_input_region(text: str) -> Optional[str]:
     return None
 
 
+TASK_STEMS = {
+    "pw_vc_relax": "vc-relax", "pw_relax": "relax", "pw_scf": "scf",
+    "pw_nscf": "nscf", "pw_bands": "bands", "bands_post": "bands-post",
+    "dos_post": "dos", "projwfc_post": "pdos", "pp_post": "pp",
+    "pw_phonon_gamma": "ph", "q2r_post": "q2r", "matdyn_post": "matdyn",
+    "dynmat_post": "dynmat", "elastic_post": "ev",
+}
+
+
+def task_file_stem(step_index: int, tool: str) -> str:
+    """Task-oriented stem for a step's files: 01_vc-relax, 07_ph, ...
+
+    `input_7_1.in` tells a user nothing about what the file is; the zero-padded
+    index keeps runs sorting correctly while the task name makes a downloaded
+    bundle self-explanatory.
+    """
+    name = TASK_STEMS.get((tool or "").strip(), (tool or "step").strip() or "step")
+    return f"{int(step_index):02d}_{name}"
+
+
 def write_inputs(
     work_dir: str,
     scripts: list,
     prefix: str = "input",
     suffix: str = ".in",
     subproblem_id: Optional[int] = None,
+    stem: Optional[str] = None,
 ):
     """
     write multiple input scripts to files in work_dir.
@@ -420,7 +441,12 @@ def write_inputs(
     os.makedirs(work_dir, exist_ok=True)
     paths = []
     for idx, content in enumerate(scripts, start=1):
-        if subproblem_id is None:
+        if stem is not None:
+            # Multiple inputs for one step get -1/-2 suffixes; a lone input keeps
+            # the bare task name.
+            tail = f"-{idx}" if len(scripts) > 1 else ""
+            filename = f"{stem}{tail}{suffix}"
+        elif subproblem_id is None:
             filename = f"{prefix}_{idx}{suffix}"
         else:
             filename = f"{prefix}_{subproblem_id}_{idx}{suffix}"
