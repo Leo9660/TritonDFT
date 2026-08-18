@@ -689,7 +689,23 @@ User request:
             params_json = params_out[0]['generated_text']
             # Normalize to actual JSON so scientific decisions can be audited
             # and later steps receive machine-readable workflow memory.
-            params_json = json.dumps(extract_json_brutal(params_json), ensure_ascii=False)
+            # Normalising to strict JSON is best-effort. Before the merge this
+            # value was passed downstream as plain TEXT, so a formatting blemish
+            # was harmless; parsing it strictly turned every blemish into a dead
+            # step, with no retry (the retry loop starts below this block). Keep
+            # the machine-readable form when it parses, fall back to the raw text
+            # when it does not, and always keep the sample that failed.
+            try:
+                params_json = json.dumps(extract_json_brutal(params_json), ensure_ascii=False)
+            except Exception as parse_err:
+                try:
+                    (Path(self.work_dir) / f"params_failed_{problem_id}.txt").write_text(
+                        params_json or "", encoding="utf-8")
+                except OSError:
+                    pass
+                print(f"[solve_sub_problem][warn] parameter JSON did not parse "
+                      f"({parse_err}); continuing with the raw text. "
+                      f"Sample saved to params_failed_{problem_id}.txt")
             # Don't dump the raw parameter JSON into the streamed log — it is a
             # multi-line LLM blob the user can't act on, and the values that
             # matter end up in the generated input file anyway (downloadable).
