@@ -8,7 +8,6 @@ import shutil
 import datetime
 import time
 
-# 假设这些模块存在于你的项目中
 from prompt import get_prompt
 from prompt.tool_requirements import get_parse_requirement
 from config import Config
@@ -17,7 +16,7 @@ from execute_code.slurm import SlurmLauncher
 from tool import get_spec, fetch_material_info_from_api_snippet, build_tool_requirements, is_allowed_fn
 from utils import get_qe_prefix, parse_scripts_block, write_inputs, \
 parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, extract_json_brutal, output_to_log_file, \
-validate_pseudos_exist, package_pseudos_for_remote, read_qe_cutoffs
+validate_pseudos_exist, package_pseudos_for_remote, read_qe_cutoffs, task_file_stem
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
 from validation import remove_undocumented_namelist_keywords, validate_qe_input
@@ -809,7 +808,24 @@ User request:
             work_dir = self.work_dir
             os.makedirs(work_dir, exist_ok=True)
             subproblem_id = subproblem.get("id", problem_id)
-            input_paths = write_inputs(work_dir, scripts, prefix="input", suffix=".in", subproblem_id=subproblem_id)
+            step_stem = task_file_stem(problem_id, subproblem.get("tool", ""))
+
+            # Keep each failed attempt instead of overwriting it. The evidence for
+            # why a step failed lives in its input+output pair, and clobbering it
+            # on retry means the only record of the failure is gone by the time
+            # anyone looks.
+            if loop_count > 1:
+                archive = Path(work_dir) / "attempts" / f"{step_stem}-attempt{loop_count - 1}"
+                try:
+                    archive.mkdir(parents=True, exist_ok=True)
+                    for old in Path(work_dir).glob(f"{step_stem}*"):
+                        if old.is_file():
+                            shutil.move(str(old), str(archive / old.name))
+                except OSError as e:
+                    if self.verbose:
+                        print(f"[solve_sub_problem][warn] could not archive attempt: {e}")
+
+            input_paths = write_inputs(work_dir, scripts, suffix=".in", stem=step_stem)
             
             # Patch Inputs
             missing_pseudo_err: Optional[str] = None
@@ -1062,7 +1078,7 @@ User request:
                 self._restore_scf_state()
 
             qe_prefix = get_qe_prefix(self)
-            output_paths = [os.path.join(work_dir, f"output_{subproblem_id}_{idx}.out") for idx in range(1, len(input_paths) + 1)]
+            output_paths = [str(Path(p).with_suffix(".out")) for p in input_paths]
             auto_parallel = self.auto_parallel and fn_spec.mode == "vc-relax"
 
             try:
@@ -1347,7 +1363,7 @@ User request:
                 "# structure from the Materials Project.",
                 "#",
                 f"# After step {first['step']} finishes, open its output:",
-                f"#     output_{first['step']}_1.out",
+                f"#     {(first['inputs'][0].rsplit('.in',1)[0] + '.out') if first.get('inputs') else 'the relaxation output'}",
                 "# find the LAST 'CELL_PARAMETERS' and 'ATOMIC_POSITIONS' blocks in it, and",
                 "# paste them over the corresponding blocks in:",
             ]
@@ -1378,7 +1394,7 @@ User request:
         for s in steps:
             L.append(f"# Step {s['step']}/{len(steps)} — {s['tool']}: {s['problem']}")
             for idx, name in enumerate(s["inputs"], start=1):
-                out = f"output_{s['step']}_{idx}.out"
+                out = name.rsplit(".in", 1)[0] + ".out"
                 L.append(f'run {s["exec"]} "{name}" "{out}"')
             if relax_steps and s["step"] == relax_steps[0]["step"] and s["step"] != steps[-1]["step"]:
                 L += [
@@ -1386,7 +1402,7 @@ User request:
                     'echo',
                     'echo "=============================================================="',
                     f'echo "Relaxation done. Copy the final CELL_PARAMETERS and"',
-                    f'echo "ATOMIC_POSITIONS from output_{s["step"]}_1.out into the inputs"',
+                    f'echo "ATOMIC_POSITIONS from {(s["inputs"][0].rsplit(".in",1)[0] + ".out") if s.get("inputs") else "the relaxation output"} into the inputs"',
                     'echo "listed at the top of this script, then press Enter."',
                     'echo "=============================================================="',
                     'read -r _',
