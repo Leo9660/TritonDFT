@@ -1,10 +1,10 @@
 # Anti-purge renewer.
 #
-# NRP Nautilus purges any Deployment whose object age (metadata.creationTimestamp)
+# NRP Nautilus purges any workload object whose age (metadata.creationTimestamp)
 # exceeds ~2 weeks (3 warning emails first). Rolling updates do NOT reset that
-# timestamp, so the only fix is to re-create the Deployment OBJECT.
+# timestamp, so the only fix is to re-create the OBJECT.
 #
-# This CronJob does it with ZERO downtime: for each managed Deployment it
+# For each managed Deployment this CronJob does it with ZERO downtime:
 #   1. dumps the LIVE spec (so it always matches the currently-deployed image —
 #      no drift / accidental rollback),
 #   2. `delete --cascade=orphan` — removes only the Deployment object; the
@@ -12,8 +12,29 @@
 #   3. re-`create` from the dumped spec — the new Deployment's pod-template-hash
 #      matches the orphaned ReplicaSet, so it ADOPTS it. No pod restarts.
 #
-# The resulting Deployment has a fresh creationTimestamp, resetting the purge
-# clock. PVCs / Secrets / Services are never touched (they aren't purged).
+# PVCs / Secrets / Services / Ingresses are never touched (they aren't purged —
+# verified: they survived 90 days while every Deployment was culled).
+#
+# 2026-08-12 — rebuilt after a full outage. Two independent root causes, both
+# fixed here; either one alone was enough to kill the site:
+#
+#   (1) IMAGE GONE. The old `docker.io/bitnami/kubectl:1.28` now 404s — Bitnami
+#       retired its public Docker Hub catalog in 2025 (images moved under
+#       `bitnamilegacy/`). The renewer pods could not even pull, so no renewal
+#       ever ran. Now on `alpine/k8s:1.33.3`, which also fixes a 1.28-client /
+#       1.33-server version skew that was outside the supported +/-1 range.
+#       NOTE: this image is Alpine — /bin/sh, NOT bash. Keep the script POSIX.
+#
+#   (2) NO SELF-RENEWAL. The renewer renewed the Deployments but never itself,
+#       so the CronJob object aged past the threshold and NRP purged it along
+#       with everything it was supposed to protect. The anti-purge mechanism
+#       was the first thing purged. It now re-creates its own CronJob object
+#       last, on every run.
+#
+# Defence in depth: every run also snapshots each live Deployment spec into the
+# `tritondft-renewer-snapshots` ConfigMap. If a Deployment is found MISSING on a
+# later run (i.e. it got purged anyway), it is restored from that snapshot
+# automatically instead of needing a human.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -30,6 +51,20 @@ rules:
 - apiGroups: ["apps"]
   resources: ["deployments"]
   verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+# Needed for self-renewal: the CronJob re-creates its own object.
+- apiGroups: ["batch"]
+  resources: ["cronjobs"]
+  verbs: ["get", "list", "create", "delete"]
+# Orphaned Jobs (left behind by the self-renew delete --cascade=orphan) are
+# cleaned up by ttlSecondsAfterFinished, but list/delete lets the job tidy up
+# any stragglers from earlier failed runs.
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "delete"]
+# Snapshot store for self-heal.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -53,8 +88,9 @@ metadata:
   labels:
     k8s-app: tritondft-renewer
 spec:
-  # Sunday 04:00 America/Los_Angeles — keeps every managed Deployment younger
-  # than 7 days, comfortably under the ~14-day purge threshold.
+  # Sunday 04:00 America/Los_Angeles — keeps every managed object younger than
+  # 7 days, comfortably under the ~14-day purge threshold. One missed run still
+  # leaves ~7 days of slack before anything is at risk.
   schedule: "0 4 * * 0"
   timeZone: "America/Los_Angeles"
   concurrencyPolicy: Forbid
@@ -65,6 +101,9 @@ spec:
     spec:
       backoffLimit: 2
       activeDeadlineSeconds: 600
+      # Self-renewal orphans this Job from its CronJob, so history limits no
+      # longer reap it. TTL makes it clean itself up regardless of ownership.
+      ttlSecondsAfterFinished: 604800
       template:
         metadata:
           labels:
@@ -83,37 +122,94 @@ spec:
                     values: ["true"]
           containers:
           - name: renewer
-            image: docker.io/bitnami/kubectl:1.28
+            # Alpine-based toolbox: kubectl 1.33 (matches the 1.33 API server)
+            # plus a real shell. /bin/sh only — do not use bashisms below.
+            image: docker.io/alpine/k8s:1.33.3
             imagePullPolicy: IfNotPresent
+            # NRP admission policy: cpu limit/request ratio must be <= 1.2 and
+            # memory limit <= 1.2x request. The old 50m/500m + 64Mi/256Mi values
+            # tripped `container-must-meet-memory-and-cpu-ratio` warnings on
+            # every apply.
             resources:
-              requests: { cpu: "50m", memory: "64Mi" }
-              limits:   { cpu: "500m", memory: "256Mi" }
-            command: ["/bin/bash", "-c"]
+              requests: { cpu: "100m", memory: "128Mi" }
+              limits:   { cpu: "120m", memory: "150Mi" }
+            command: ["/bin/sh", "-c"]
             args:
             - |
               set -u
               NS=datahub-llm
               DEPLOYS="postgres tritondft tritondft-worker"
+              SELF=tritondft-renewer
+              CM=tritondft-renewer-snapshots
+              SNAP=/tmp/snap
+              mkdir -p "$SNAP"
               rc=0
+
+              # Strip server-managed fields that block a fresh create.
+              # status: is always the last top-level block in `get -o yaml`.
+              strip() {
+                sed '/^status:$/,$d' \
+                  | grep -vE '^[[:space:]]+(creationTimestamp|resourceVersion|uid|generation|selfLink):'
+              }
+
+              echo "### 1. renew / self-heal deployments"
               for D in $DEPLOYS; do
-                echo "=== renewing deployment/$D ==="
-                if ! kubectl -n "$NS" get deploy "$D" -o yaml --show-managed-fields=false > /tmp/raw.yaml 2>/dev/null; then
-                  echo "WARN: deployment/$D not found — skipping"
-                  continue
+                echo "=== deployment/$D ==="
+                if kubectl -n "$NS" get deploy "$D" -o yaml --show-managed-fields=false 2>/dev/null | strip > "$SNAP/$D"; then
+                  :
                 fi
-                # Strip server-managed fields that block a fresh create.
-                # status: is always the last top-level block in `get -o yaml`.
-                sed '/^status:$/,$d' /tmp/raw.yaml \
-                  | grep -vE '^[[:space:]]+(creationTimestamp|resourceVersion|uid|generation|selfLink):' \
-                  > /tmp/d.yaml
-                kubectl -n "$NS" delete deploy "$D" --cascade=orphan --ignore-not-found
-                if kubectl -n "$NS" create -f /tmp/d.yaml; then
-                  echo "OK: deployment/$D recreated (clock reset, RS adopted)"
+                if [ -s "$SNAP/$D" ]; then
+                  # Live: renew in place, zero downtime.
+                  kubectl -n "$NS" delete deploy "$D" --cascade=orphan --ignore-not-found
+                  if kubectl -n "$NS" create -f "$SNAP/$D"; then
+                    echo "OK   $D — clock reset, ReplicaSet adopted (no pod restart)"
+                  else
+                    echo "ERROR $D — recreate failed"
+                    rc=1
+                  fi
                 else
-                  echo "ERROR: failed to recreate deployment/$D"
-                  rc=1
+                  # Missing: it was purged. Restore from the last snapshot.
+                  rm -f "$SNAP/$D"
+                  if kubectl -n "$NS" get cm "$CM" -o "jsonpath={.data.$D}" 2>/dev/null > "$SNAP/$D" && [ -s "$SNAP/$D" ]; then
+                    if kubectl -n "$NS" create -f "$SNAP/$D"; then
+                      echo "HEAL $D — was MISSING, restored from snapshot"
+                    else
+                      echo "ERROR $D — missing and snapshot restore failed"
+                      rc=1
+                    fi
+                  else
+                    echo "WARN $D — missing and no snapshot available; skipping"
+                    rm -f "$SNAP/$D"
+                    rc=1
+                  fi
                 fi
               done
-              echo "=== final state ==="
-              kubectl -n "$NS" get deploy
+
+              echo "### 2. save snapshots for future self-heal"
+              if kubectl -n "$NS" create configmap "$CM" \
+                   $(for D in $DEPLOYS; do [ -s "$SNAP/$D" ] && printf -- "--from-file=%s=%s " "$D" "$SNAP/$D"; done) \
+                   --dry-run=client -o yaml | kubectl -n "$NS" apply -f -; then
+                echo "OK   snapshots stored in configmap/$CM"
+              else
+                echo "WARN snapshot store failed (non-fatal)"
+              fi
+
+              echo "### 3. self-renew — reset THIS CronJob's own purge clock"
+              # Done last: --cascade=orphan detaches the currently-running Job
+              # (this pod), which keeps running to completion unaffected.
+              if kubectl -n "$NS" get cronjob "$SELF" -o yaml --show-managed-fields=false 2>/dev/null | strip > /tmp/self.yaml && [ -s /tmp/self.yaml ]; then
+                kubectl -n "$NS" delete cronjob "$SELF" --cascade=orphan --ignore-not-found
+                if kubectl -n "$NS" create -f /tmp/self.yaml; then
+                  echo "OK   $SELF — self-renewed, clock reset"
+                else
+                  echo "ERROR $SELF — SELF-RENEW FAILED; the renewer will be purged in ~2 weeks"
+                  rc=1
+                fi
+              else
+                echo "ERROR $SELF — could not read own CronJob spec"
+                rc=1
+              fi
+
+              echo "### final state"
+              kubectl -n "$NS" get deploy,cronjob
               exit $rc
