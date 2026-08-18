@@ -33,6 +33,10 @@ class RequestLinkBody(BaseModel):
     email: EmailStr
 
 
+class VerifyBody(BaseModel):
+    token: str
+
+
 class VerifyResponse(BaseModel):
     ok: bool
     token: str
@@ -142,10 +146,16 @@ async def request_link(request: Request, body: RequestLinkBody, db: Session = De
 
 @router.post("/verify")
 async def verify_magic_link(
-    token: str,
+    body: VerifyBody,
     response: Response,
     db: Session = Depends(get_session),
 ):
+    # Declared as a Pydantic body, not a bare `str`. FastAPI treats a bare
+    # non-path str as a QUERY parameter, so the frontend's JSON body
+    # {"token": ...} was rejected with 422 ("query.token: Field required") and
+    # every magic-link sign-in failed. A body is also the right place for it:
+    # a token in the query string leaks into access logs and browser history.
+    token = body.token
     ml = db.query(MagicLink).filter(MagicLink.token == token).first()
     if ml is None:
         raise errors.magic_link_invalid()
