@@ -16,3 +16,6 @@ env_setup.sh
 githubtoken.txt
 get-mp-key.txt
 *.git-credentials
+*.token
+tok.json
+k8stoken.txt
