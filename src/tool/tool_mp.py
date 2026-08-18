@@ -46,6 +46,28 @@ def _extract_list(snippet: str, key: str) -> Optional[List[Any]]:
 
 # ---------- Core function ----------
 
+
+def _spacegroup_number_from_symbol(symbol: str):
+    """International number for a Hermann-Mauguin symbol, or None.
+
+    Accepts the loose forms an LLM writes ("P63/mmc") as well as the canonical
+    ones ("P6_3/mmc"), since the two differ only by underscores before screw-axis
+    digits.
+    """
+    try:
+        from pymatgen.symmetry.groups import SpaceGroup
+    except Exception:
+        return None
+    candidates = [symbol, symbol.replace("_", "")]
+    # "P63/mmc" -> "P6_3/mmc": reinsert the underscore before a screw digit.
+    candidates.append(re.sub(r"([A-Za-z])(\d)", r"\1_\2", symbol.replace("_", ""), count=1))
+    for cand in dict.fromkeys(candidates):
+        try:
+            return int(SpaceGroup(cand).int_number)
+        except Exception:
+            continue
+    return None
+
 def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose: bool = False) -> Dict[str, Dict[str, Any]]:
     """
     Parse an MP API query snippet (e.g. 'mpr.materials.summary.search(formula="BaTiO3", spacegroup_symbol="P4mm")'),
@@ -79,6 +101,22 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
     sg_symbol = _extract_str(snippet, "spacegroup_symbol")
     sg_number = _extract_int(snippet, "spacegroup_number")
     chemsys = _extract_str(snippet, "chemsys")
+
+    # The Materials Project API returns HTTP 500 for any spacegroup_symbol
+    # containing a slash — the URL-encoded "%2F" breaks it server-side. That hits
+    # a large fraction of real space groups (P6_3/mmc, P4/mmm, I4/mcm, C2/m...),
+    # so translate the symbol to its international number, which works fine.
+    if sg_symbol and "/" in sg_symbol and sg_number is None:
+        sg_number = _spacegroup_number_from_symbol(sg_symbol)
+        if sg_number is not None:
+            if verbose:
+                print(f"[MP] spacegroup_symbol={sg_symbol!r} would 500; querying by number {sg_number}")
+            sg_symbol = None
+        else:
+            # Unknown symbol: drop the constraint rather than fail the whole run.
+            if verbose:
+                print(f"[MP] could not map spacegroup {sg_symbol!r} to a number; querying without it")
+            sg_symbol = None
 
     # Step 3. Query summary endpoint to get material_ids (avoid `limit=`; truncate locally).
     if not material_ids:

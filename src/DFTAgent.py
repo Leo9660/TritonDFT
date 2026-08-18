@@ -825,6 +825,18 @@ User request:
                     if self.verbose:
                         print(f"[solve_sub_problem][warn] could not archive attempt: {e}")
 
+                # ph.x writes recovery state into _ph0/. A retry that changes the
+                # q-point setup (e.g. ldisp .true. -> .false.) then hits
+                # "wrong ldisp" when recover=.true. tries to resume from the
+                # previous attempt's incompatible state. The failed attempt's
+                # scratch is never useful to the next one, so drop it.
+                if fn_spec.exec == "ph.x":
+                    ph_scratch = Path(work_dir) / "_ph0"
+                    if ph_scratch.is_dir():
+                        shutil.rmtree(ph_scratch, ignore_errors=True)
+                        if self.verbose:
+                            print("[solve_sub_problem] cleared _ph0 so the retry starts clean")
+
             input_paths = write_inputs(work_dir, scripts, suffix=".in", stem=step_stem)
             
             # Patch Inputs
