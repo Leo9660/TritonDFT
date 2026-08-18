@@ -1143,7 +1143,7 @@ User request:
             # --- Parsing & Validation Phase ---
             t_parse_start = time.perf_counter()
 
-            input_list, output_list = get_qe_result(work_dir=work_dir, input_paths=input_paths, verbose=self.verbose, subproblem_id=subproblem_id)
+            input_list, output_list = get_qe_result(work_dir=work_dir, input_paths=input_paths, verbose=self.verbose, subproblem_id=subproblem_id, output_paths=output_paths)
             output_list = preprocess_output_list(output_list, verbose=self.verbose)
             
             # Result Parsing
