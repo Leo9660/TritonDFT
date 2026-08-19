@@ -159,6 +159,9 @@ def create_job(
 
     # Per-user cap on in-flight jobs — bounds queue depth and (with the credit
     # system) real model spend. Privileged accounts get a higher cap.
+    # Deliberately NOT can_use_cpu: that flag says what you may run, not how many
+    # at once, and someone with CPU access but ordinary credits should not also
+    # get a deeper queue.
     privileged_cap = user.is_admin or user.is_unlimited
     max_active = MAX_ACTIVE_JOBS_PRIVILEGED if privileged_cap else MAX_ACTIVE_JOBS_REGULAR
     active = (
@@ -173,7 +176,11 @@ def create_job(
     # CPU policy: only admins and unlimited accounts may run real DFT (CPU).
     # Everyone else is forced to script-only (generate inputs, no execution),
     # regardless of what the client requested.
-    privileged = user.is_admin or user.is_unlimited
+    # can_use_cpu belongs here. Without it, granting a user CPU access did
+    # nothing: the admin page set the flag, /me reported it, the frontend
+    # enabled its toggle and sent script_only=false — and this line quietly
+    # forced it back to true, so the run stayed script-only with no explanation.
+    privileged = user.is_admin or user.is_unlimited or user.can_use_cpu
     if privileged:
         # Default for privileged users is CPU on (script_only=False).
         script_only = bool(body.script_only) if body.script_only is not None else False
