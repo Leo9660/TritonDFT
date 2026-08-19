@@ -38,7 +38,7 @@ MODEL_PRICES = {
 
 # What the frontend dropdown may request. Anything else falls back to DEFAULT.
 ALLOWED_MODELS = list(MODEL_PRICES.keys())
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = "gpt-5.2"
 # Unknown models are priced conservatively (the most expensive flagship input
 # + output) so we never undercharge for something we don't recognize.
 _FALLBACK_PRICE = (2.50, 10.00)
