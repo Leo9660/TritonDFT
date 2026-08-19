@@ -22,6 +22,14 @@ import errors
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
+# Declared `def`, not `async def`, deliberately. Every handler in this module
+# does blocking work — synchronous SQLAlchemy queries, and for the artifact
+# routes iterdir/stat/read over a shared PVC. FastAPI runs a `def` handler in
+# its threadpool and an `async def` one directly on the event loop, so as
+# `async def` a single slow directory listing stalled every other request on
+# that pod, including the /jobs/{id} polling the whole run view depends on.
+# None of them await anything, so there is nothing to gain from async here.
+
 MAX_MESSAGE_CHARS = 8000
 MAX_CONVERSATION_CHARS = 2_000_000
 MAX_OUTPUT_TOKENS = 4096   # worst-case for pre-charge
@@ -102,7 +110,7 @@ def _queue_position(db: Session, job: Job) -> int:
 
 @router.post("")
 @limiter.limit(PER_IP_RATE)
-async def create_job(
+def create_job(
     request: Request,
     body: CreateJobBody,
     user: User = Depends(get_current_user),
@@ -183,7 +191,7 @@ async def create_job(
 
 
 @router.get("/{job_id}")
-async def get_job(
+def get_job(
     job_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
@@ -235,7 +243,7 @@ def _narrative_only(result):
 
 
 @router.post("/{job_id}/cancel")
-async def cancel_job(
+def cancel_job(
     job_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
@@ -264,7 +272,7 @@ async def cancel_job(
 
 
 @router.post("/{job_id}/step-action")
-async def step_action(
+def step_action(
     job_id: str,
     body: StepActionBody,
     user: User = Depends(get_current_user),
@@ -315,7 +323,7 @@ async def step_action(
 
 
 @router.post("/{job_id}/plan-action")
-async def plan_action(
+def plan_action(
     job_id: str,
     body: PlanActionBody,
     user: User = Depends(get_current_user),
@@ -375,7 +383,7 @@ def _owned_job(job_id: str, user: User, db: Session) -> Job:
 
 
 @router.get("/{job_id}/files")
-async def list_job_files(
+def list_job_files(
     job_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
@@ -388,7 +396,7 @@ async def list_job_files(
 
 
 @router.get("/{job_id}/steps/{step}/input")
-async def get_step_input(
+def get_step_input(
     job_id: str,
     step: int,
     user: User = Depends(get_current_user),
@@ -415,7 +423,7 @@ async def get_step_input(
 
 
 @router.get("/{job_id}/bands")
-async def get_job_bands(
+def get_job_bands(
     job_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
@@ -428,7 +436,7 @@ async def get_job_bands(
 
 
 @router.get("/{job_id}/dos")
-async def get_job_dos(
+def get_job_dos(
     job_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
@@ -442,7 +450,7 @@ async def get_job_dos(
 
 
 @router.get("/{job_id}/phonons")
-async def get_job_phonons(
+def get_job_phonons(
     job_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
@@ -456,7 +464,7 @@ async def get_job_phonons(
 
 
 @router.get("/{job_id}/download")
-async def download_job_zip(
+def download_job_zip(
     job_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
@@ -474,7 +482,7 @@ async def download_job_zip(
 
 
 @router.get("/{job_id}/files/{name}")
-async def get_job_file(
+def get_job_file(
     job_id: str,
     name: str,
     user: User = Depends(get_current_user),
