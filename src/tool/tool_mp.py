@@ -221,7 +221,14 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
 
     result["material_ids"].append(min_id)
     result["initial_structures"].append(init_list[min_id][min_subid])
-    result["relaxed_structures"].append(relaxed_lookup.get(mid)[min_subid])
+    # min_id, not mid: `mid` is whatever the loop above happened to end on, so
+    # this used to pair the selected material's primitive/conventional cells
+    # with a DIFFERENT material's relaxed one. And relaxed_lookup holds a single
+    # Structure per id, not a list — indexing it returned a PeriodicSite. Nothing
+    # reads this field yet, which is why neither showed up; the planned
+    # "start from the relaxed structure" option would have walked straight into
+    # both.
+    result["relaxed_structures"].append(retrieved_structure)
     # result["conventional_structure"].append(conventional)
     # result["primitive_structure"].append(primitive)
 
