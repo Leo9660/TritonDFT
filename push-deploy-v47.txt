@@ -1,19 +1,46 @@
 # =============================================================================
-# TritonDFT — build / push image v46 + deploy to NRP
+# TritonDFT — build / push image v47 + deploy to NRP
 #
 # Run on the HOST machine (needs docker + kubectl). Run line by line.
-# v46 because image tags are IMMUTABLE — v45 is live, never reuse a tag.
+# v47 because image tags are IMMUTABLE — v46 is live, never reuse a tag.
 #
 # NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
 # The postgres role is `tritondft`, NOT `postgres`.
 #
-# WHAT'S IN v46
+# WHAT'S IN v47
 #
 # This supersedes v45 rather than adding to it. The list below is everything
-# since v44; whichever commit your v45 image was built from, v46 contains all of
+# since v44; whichever commit your v45 image was built from, v47 contains all of
 # it, so run every verification step regardless of what you already checked.
 #
-# New since v45 was pushed:
+# New since v46:
+#
+#  FEAT ⚠️ A message is triaged BEFORE anything runs.
+#       Every message used to start a Materials Project lookup and a full DFT
+#       workflow — including "what was that band gap again?", which re-ran a
+#       calculation to answer a question already answered and read to a chemist
+#       as the tool not listening.
+#
+#       A cheap classification call now sorts each message into:
+#         calculate — needs a new run; proceeds exactly as before
+#         followup  — asks about work already done; answered from the
+#                     conversation, no MP and no QE
+#         chat      — a general DFT question; answered directly
+#         offtopic  — declined in one sentence
+#
+#       It FAILS OPEN: a parse error, an unknown label or an empty answer all
+#       fall back to "calculate", because refusing a real request is worse than
+#       running a needless one.
+#
+#       For this to work the worker needed the conversation, which it never had
+#       — it only ever received the single user message. jobs.context now
+#       carries a trimmed transcript (6 turns, 12k chars, keeping the END of
+#       each assistant turn since the analysis and numbers are written last).
+#
+#  ⚠️ DATABASE MIGRATION: jobs.context (ALTER TABLE ... ADD COLUMN IF NOT
+#       EXISTS, additive, v46 pods ignore it — rollback needs no undo).
+#
+# Also new since v45 was pushed:
 #
 #  FEAT The run STATES which pseudopotential library it used. (0be522b)
 #       Under auto the settings panel can only show the fallback, and the
@@ -228,12 +255,12 @@ kubectl -n datahub-llm get pods
 # ---- 1. Pull ----------------------------------------------------------------
 cd ~/workspace/TritonDFT
 git pull
-grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v46
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v47
 
 # ---- 2. Build & push --------------------------------------------------------
 docker login
-docker build -t yil384/tritondft:v46 .
-docker push yil384/tritondft:v46
+docker build -t yil384/tritondft:v47 .
+docker push yil384/tritondft:v47
 
 #   NOTE: .dockerignore now excludes env_setup.sh, *.token, tok.json,
 #   k8stoken.txt and *.sql. Those were being baked into every previous image via
@@ -260,6 +287,17 @@ kubectl -n datahub-llm get pods -l app=tritondft-worker \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
 # ---- 5. Smoke test ----------------------------------------------------------
+#   a00) TRIAGE — the new behaviour. Run any calculation, wait for it to finish,
+#      then ask "what was the band gap?" in the SAME conversation. It must answer
+#      from the run that just happened, in seconds, with no Material card and no
+#      plan. The worker log should show
+#          triage: followup — ...
+#      Then ask "what is a pseudopotential?" -> triage: chat, answered directly.
+#      Then ask something off-topic -> declined in one sentence.
+#      Then ask for a NEW material -> triage: calculate, full workflow as before.
+#      The last one is the one that matters: a false "followup" on a real request
+#      is the failure mode to watch for.
+#
 #   a0) CONCURRENCY — the one that has been failing in front of people. Have two
 #      browsers (or two people) start runs at the same time and keep both open.
 #      Neither may show "Something went wrong", and the API pods must not
@@ -373,5 +411,5 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #
 # The scientific consequence is the part that matters: every silicon number this
 # service has produced belongs to a metastable polymorph. Re-run anything from
-# before v46 that is going into the workshop.
+# before v47 that is going into the workshop.
 # =============================================================================
