@@ -19,7 +19,7 @@
 # any interactive `kubectl get pods -n datahub-llm`.
 set -u
 
-export HOME="${HOME:-/home/yichen}"
+export HOME="${HOME:-/home/zhengding}"
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
 export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$PATH"
 
