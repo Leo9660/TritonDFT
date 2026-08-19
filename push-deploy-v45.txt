@@ -128,17 +128,31 @@
 #       duration, and anyio's default of 40 threads against 10 connections would
 #       trade event-loop stalls for connection-pool timeouts.
 #
-#  FEAT Pseudopotential MODE — manual vs auto. (Kuntal's point: a library named
-#       in the query should be honoured.) The dropdowns were unconditionally
-#       binding, so "use PBEsol" in a prompt did nothing and nothing said why.
-#       Always letting the query win is wrong too — the control exists for
-#       people meeting DFT for the first time. So:
-#         manual (default) — dropdowns decide; a library named in the prompt is
-#                            ignored, and the log now says so and names the
-#                            setting that overrode it.
-#         auto             — the prompt wins, dropdowns are the fallback. This
-#                            is the pre-dropdown behaviour, for experts.
+#  FEAT ⚠️ BEHAVIOUR CHANGE: pseudopotentials are chosen by the agent BY DEFAULT.
+#       The dropdowns used to be unconditionally binding, so "use PBEsol" in a
+#       prompt did nothing and nothing on screen said why. (Kuntal's point.)
+#
+#       Resolution order under the new default, "auto":
+#         1. The request names a functional -> the existing regex picks that
+#            library, including switching to FR when SOC is asked for.
+#         2. It names none -> NOTHING IS PATCHED. Whatever pseudo_dir the model
+#            wrote in its own script survives. The prompt now lists the exact
+#            absolute paths installed on this host, since the model cannot know
+#            them, and _guard_pseudo_dir() replaces anything that is not one of
+#            them rather than letting a run die on a missing directory.
+#         3. The dropdowns are only the fallback, and are greyed out in the UI.
+#
+#       "manual" is the other mode and is unchanged: the dropdown is binding,
+#       and a library named in the prompt is ignored — but the log now SAYS it
+#       was ignored and names the setting that overrode it.
+#
+#       input_dft is no longer forced to the dropdown's functional under auto.
+#       Forcing it while the model picked its own library made the two
+#       contradict and tripped PSEUDO_XC_MISMATCH on every step.
+#
 #       pseudo_choice now carries "mode"; unknown values fall back to manual.
+#       An OLD frontend sends no mode at all and therefore keeps today's
+#       behaviour, so the two can be deployed in either order.
 #
 #  FEAT New endpoint GET /jobs/{id}/steps/{n}/input, for the UI's input tab.
 #       The UI used to list the whole run directory and filter client-side —
@@ -295,10 +309,19 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      (it was always there, just filtered out) but still no plot: the numbers
 #      in it are degenerate. That run has to be repeated to get a real DOS.
 #
-#   f) Pseudopotential modes. With "Use my choice" and the dropdown on PBE, ask
-#      for something "with PBEsol" — the run must use PBE and the log must carry
-#      the line explaining that the setting won. Switch to "Let the agent
-#      choose" and repeat: it must now use PBEsol.
+#   f) Pseudopotential modes — this is a DEFAULT change, test both directions.
+#      Leave it on "Let the agent choose" (now the default, on the left, with
+#      the three dropdowns greyed out) and ask for anything "with PBEsol". Open
+#      the step's input tab: pseudo_dir must end in PBEsol_standard.
+#      Then ask a plain question naming no functional. pseudo_dir must still be
+#      one of the installed libraries — if you see this line in the worker log
+#          [pseudo] the generated input pointed at '...', which is not one of
+#          the installed libraries
+#      the guard did its job, but tell me: it means the prompt's path list is
+#      not landing.
+#      Then switch to "Use my choice" with the dropdown on PBE and ask for
+#      PBEsol again: the run must use PBE, and the log must carry
+#          [pseudo] The query asks for PBEsol, but the library is fixed to PBE
 #
 #   g) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
 #      It must fail ONCE, quickly, with RAMAN_REQUIRES_LDA — not grind through
