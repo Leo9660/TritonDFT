@@ -15,6 +15,16 @@
 #
 # New since v46:
 #
+#  FIX  Granting a user CPU access still ran their jobs script-only.
+#       v46 added the can_use_cpu column, the admin control and the /me field —
+#       but not the line that actually authorises a run:
+#           privileged = user.is_admin or user.is_unlimited
+#       So the flag was set, the frontend enabled its toggle and sent
+#       script_only=false, and this quietly forced it back to true. The user saw
+#       a working switch and a script-only run, with nothing explaining it. It
+#       now includes can_use_cpu. (The separate in-flight job cap deliberately
+#       does not: that flag says what you may run, not how many at once.)
+#
 #  FEAT ⚠️ A message is triaged BEFORE anything runs.
 #       Every message used to start a Materials Project lookup and a full DFT
 #       workflow — including "what was that band gap again?", which re-ran a
@@ -287,6 +297,11 @@ kubectl -n datahub-llm get pods -l app=tritondft-worker \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
 # ---- 5. Smoke test ----------------------------------------------------------
+#   a000) CPU ACCESS. Take a NON-admin, NON-unlimited account, grant it CPU with
+#      the admin page's CPU button, and have it run anything. The run must NOT be
+#      script-only — it must actually execute pw.x. Before this release the
+#      toggle moved and the run stayed script-only regardless.
+#
 #   a00) TRIAGE — the new behaviour. Run any calculation, wait for it to finish,
 #      then ask "what was the band gap?" in the SAME conversation. It must answer
 #      from the run that just happened, in seconds, with no Material card and no
