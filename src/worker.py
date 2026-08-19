@@ -74,7 +74,8 @@ def log(msg: str):
 
 def claim_job():
     """Atomically claim one queued job.
-    Returns (id, user_id, usage_log_id, query, model, script_only, mode) or None."""
+    Returns (id, user_id, usage_log_id, query, model, script_only, mode, pseudo_choice)
+    or None."""
     db = SessionLocal()
     try:
         row = db.execute(text("""
@@ -92,7 +93,7 @@ def claim_job():
             return None
         job = db.query(Job).filter(Job.id == row[0]).first()
         return (job.id, job.user_id, job.usage_log_id, job.query,
-                job.model, bool(job.script_only), job.mode or "auto")
+                job.model, bool(job.script_only), job.mode or "auto", job.pseudo_choice)
     finally:
         db.close()
 
@@ -301,7 +302,7 @@ def finalize(job_id, user_id, usage_log_id, status, output, error,
 
 # ───── Job execution ─────
 
-def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only=False, mode="auto"):
+def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only=False, mode="auto", pseudo_choice=None):
     # Reconfigure the (reused) agent for THIS job: model, script-only mode, and
     # a fresh token tally so billing reflects only this job's usage.
     if model:
@@ -311,6 +312,11 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
         except Exception:
             pass
     agent.script_only = bool(script_only)
+    # Re-resolve the pseudopotential library for THIS job (the agent is reused
+    # across jobs, so a previous job's choice must not leak into this one).
+    agent.pseudo_choice = dict(pseudo_choice) if pseudo_choice else None
+    agent.pseudo_dir = agent.config.pseudo.PBE
+    agent._apply_pseudo_choice()
     try:
         agent.generator.reset_token_counters()
     except Exception:
@@ -602,10 +608,10 @@ def main():
             time.sleep(POLL_INTERVAL_S)
             continue
 
-        job_id, user_id, usage_log_id, query, model, script_only, mode = claimed
+        job_id, user_id, usage_log_id, query, model, script_only, mode, pseudo_choice = claimed
         log(f"claimed job {job_id}")
         try:
-            run_job(agent, job_id, user_id, usage_log_id, query, model, script_only, mode)
+            run_job(agent, job_id, user_id, usage_log_id, query, model, script_only, mode, pseudo_choice)
         except Exception as e:
             log(f"run_job crashed for {job_id}: {e}")
             try:
