@@ -1525,6 +1525,44 @@ User request:
             return None
         return path.name
 
+    def _final_answer(self, query: str, conclusions: list) -> str:
+        """Synthesise the per-step verdicts into an answer to the question asked.
+
+        Every earlier judgement looks at ONE subproblem and never sees the
+        original question, so without this the run ended with a stack of step
+        verdicts and no answer. Deciding what the answer IS — which number
+        matters, what caveat a scientist would insist on — is judgement, so it
+        is a model call rather than a template.
+
+        Falls back to the concatenated step conclusions if the call fails: a
+        slightly worse answer beats losing the results entirely.
+        """
+        joined = "\n\n".join(conclusions)
+        if not conclusions:
+            return joined
+        try:
+            # _run_steps is appended to as steps finish and re-ordered on retry,
+            # so sort before rendering or the plan reads out of sequence.
+            ordered = sorted(self._run_steps or [], key=lambda st: st.get("step", 0))
+            plan_txt = "\n".join(
+                f"{i+1}. {st.get('problem','')} "
+                f"[{st.get('exec','')}{' ' + st['mode'] if st.get('mode') else ''}]"
+                for i, st in enumerate(ordered)
+            ) or "(not recorded)"
+            messages = get_prompt(prompt_type="final_answer", query=query,
+                                  plan=plan_txt, step_conclusions=joined)
+            out = self.generator(messages[0]["content"],
+                                 max_new_tokens=self.max_new_tokens,
+                                 return_full_text=False)
+            text = (out[0].get("generated_text") or "").strip()
+            # Keep the step-by-step detail under the answer — it is the evidence
+            # for it, and a user who wants to check a number needs it.
+            return f"{text}\n\n---\n\n{joined}" if text else joined
+        except Exception as e:
+            if self.verbose:
+                print(f"[analysis] final answer synthesis failed: {e}")
+            return joined
+
     def _write_analysis(self, analysis: str, query: str = "") -> None:
         """Persist the run's natural-language conclusion to ``analysis.json`` in
         the run directory so the API can surface it as the answer to the user's
@@ -1775,5 +1813,5 @@ User request:
                    if runner else
                    "run the inputs in numeric order."), query)
         else:
-            self._write_analysis("\n\n".join(conclusions), query)
+            self._write_analysis(self._final_answer(query, conclusions), query)
         return last_sub_problem_res
