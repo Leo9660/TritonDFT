@@ -1,0 +1,118 @@
+# =============================================================================
+# TritonDFT — build / push image v43 + deploy to NRP
+#
+# Run on the HOST machine (needs docker + kubectl). Run line by line.
+# v43 because image tags are IMMUTABLE — v42 is live, never reuse a tag.
+#
+# NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
+# The postgres role is `tritondft`, NOT `postgres`.
+#
+# WHAT'S IN v43 — all four are log noise you have been staring at
+# -----------------------------------------------------------------------------
+#  FIX  restart_mode is repaired, not rejected. (98cc518)
+#       NEW_STEP_RESTART_MODE_INVALID fired on nearly every nscf/bands step,
+#       cost a full regeneration round each time, and printed an ERROR the user
+#       read as a failure. A step the agent has just written has no checkpoint
+#       of its own to resume from, so 'from_scratch' is the only correct value —
+#       always, with no judgement involved. force_from_scratch() now rewrites it
+#       in place BEFORE validation runs, so the rule never fires.
+#
+#  FIX  Raman under GGA no longer loops forever. (c5705ac)
+#       RAMAN_NOT_IN_THIS_PH demanded lraman=.true. whenever the query mentioned
+#       Raman, with no knowledge of the functional. Under PBE that was
+#       unsatisfiable: lraman off -> validator rejects; lraman on -> ph.x aborts
+#       with "third order derivatives not implemented with GGA". The agent
+#       oscillated until it ran out of retries, each attempt a full 32-rank ph.x
+#       launch. (The MPI_ABORT in those logs is how QE reports a fatal error
+#       under mpirun — it was never a parallelism problem.) The rule now reads
+#       the run's XC family from the pw.x inputs beside the ph.x one and fails
+#       ONCE with RAMAN_REQUIRES_LDA, naming both ways out.
+#
+#  DOC  tool_requirements explains what restart_mode is NOT. (f81c52d)
+#       Cannot improve correctness — the repair above already guarantees the
+#       value — but a model that writes 'restart' for an nscf step believes that
+#       is how a step inherits the SCF charge density, and that belief distorts
+#       other parts of the input the repair does not touch.
+#
+#  FIX  The MP spacegroup note is out of the user stream. (56748e0)
+#       "spacegroup_symbol='P63/mmc' would 500; querying by number 194" was
+#       written for me. The Materials Project API really does return 500 for any
+#       spacegroup symbol containing a slash, and querying by international
+#       number is the equivalent workaround — but that is a pod-log detail.
+#
+#  Frontend since v42 is already live on Pages (plan list now renders, per-step
+#  input/output tabs, conversation opens at its end, no failure styling on a
+#  step that is still running). Not in this image.
+#
+#  NO database migration in this release. NO dependency changes.
+# =============================================================================
+
+# ---- 0. Re-auth to NRP (tokens last ~21 min) --------------------------------
+#   https://portal.nrp-nautilus.io/  ->  Get Config  ->  overwrite ~/.kube/config
+kubectl -n datahub-llm get pods
+
+# ---- 1. Pull ----------------------------------------------------------------
+cd ~/workspace/TritonDFT
+git pull
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v43
+
+# ---- 2. Build & push --------------------------------------------------------
+docker login
+docker build -t yil384/tritondft:v43 .
+docker push yil384/tritondft:v43
+
+#   NOTE: .dockerignore now excludes env_setup.sh, *.token, tok.json,
+#   k8stoken.txt and *.sql. Those were being baked into every previous image via
+#   `COPY . /workspace`, and docker.io/yil384/tritondft is a PUBLIC repository.
+#   This build is the first one without them. It does not undo the exposure in
+#   v30..v42 — those keys still need rotating.
+
+# ---- 3. Deploy --------------------------------------------------------------
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/worker.yaml
+
+kubectl -n datahub-llm rollout status deploy/tritondft --timeout=300s
+kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=900s
+
+#   "7 of 8 updated replicas are available…" repeating is NORMAL — maxUnavailable
+#   is 1 and a pod mid-calculation burns the full 60s grace period, so the worker
+#   rollout can take ~8 minutes. Only investigate on Pending / ImagePullBackOff /
+#   CrashLoopBackOff.
+
+# ---- 4. Verify --------------------------------------------------------------
+#   Everything here lands in the WORKER (the agent generates and validates
+#   inputs), so check that digest:
+kubectl -n datahub-llm get pods -l app=tritondft-worker \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+
+# ---- 5. Smoke test ----------------------------------------------------------
+#   a) Run bulk Si band gap. The log must NOT contain
+#        NEW_STEP_RESTART_MODE_INVALID
+#      anywhere. Confirm the repair actually ran instead of the model simply
+#      getting it right this time:
+kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restart'"
+#      A line there means the repair fired and the user never saw it. No line
+#      just means the model wrote it correctly — also fine.
+#
+#   b) Open a step's "input" tab in the UI and read the generated file. That is
+#      new in this frontend and it is the fastest way to see whether prefix,
+#      cutoff and k-mesh are what you expect.
+#
+#   c) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
+#      It must fail ONCE, quickly, with RAMAN_REQUIRES_LDA — not grind through
+#      retries. Then switch the functional dropdown to LDA and re-run; that path
+#      should proceed.
+#
+#      ⚠️ WORKSHOP: the Si Raman demo REQUIRES LDA. Pick LDA / SR / standard in
+#      the pseudopotential dropdown. Under PBE it cannot work — that is a
+#      Quantum ESPRESSO limitation, not ours.
+
+# =============================================================================
+# Rollback
+#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v42
+#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v42
+#
+# Risk: low. No migration, no dependency change, no API contract change. Three
+# of the four changes only make the agent stop doing something it should never
+# have done; the fourth is a prompt paragraph.
+# =============================================================================
