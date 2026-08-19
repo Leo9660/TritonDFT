@@ -230,7 +230,13 @@ def parse_bands(run_dir: Path):
     Format: blank-line-separated blocks, each block one band, each line
     `k_distance  energy`. Returns None if no band file.
     """
+    # bands.x writes <filband>.gnu, and filband is whatever the model chose. The
+    # prompt suggests '<prefix>.band' but also allows a fixed 'bands.dat', which
+    # produces bands.dat.gnu — so matching only *.band.gnu silently lost the plot
+    # for the second, equally valid, choice.
     gnu = next(iter(sorted(run_dir.glob("*.band.gnu"))), None)
+    if gnu is None:
+        gnu = next(iter(sorted(run_dir.glob("*.gnu"))), None)
     if gnu is None:
         return None
     bands = []
@@ -342,7 +348,18 @@ def parse_dos(run_dir: Path):
     derived from filenames rather than from any per-material code."""
     out = {}
 
+    # Same problem as the band file: the prompt allows fildos='<prefix>.dos' or a
+    # fixed 'dos.dat', and only the first matched. Fall back to anything that
+    # looks like a DOS table, excluding the projected files which are parsed
+    # separately below and would otherwise be mistaken for the total.
     tot = next(iter(sorted(run_dir.glob("*.dos"))), None)
+    if tot is None:
+        tot = next(
+            (f for f in sorted(run_dir.glob("*dos*"))
+             if f.is_file() and "pdos" not in f.name.lower()
+             and f.suffix.lower() not in (".in", ".out")),
+            None,
+        )
     if tot is not None:
         t = _read_xy_table(tot)
         if t:
