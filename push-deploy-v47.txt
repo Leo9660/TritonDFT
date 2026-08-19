@@ -47,8 +47,29 @@
 #       carries a trimmed transcript (6 turns, 12k chars, keeping the END of
 #       each assistant turn since the analysis and numbers are written last).
 #
+#  FEAT A follow-up can READ the run's files, not just re-read the chat.
+#       The conversation text holds the streamed log and nothing else, so
+#       "what cutoff did step 3 use?" was unanswerable with 03_nscf.in sitting
+#       on disk. Rather than widening the context until everything fits, the
+#       follow-up is given a MANIFEST — every job in this chat, what it
+#       concluded, and what files it left — and asks for what it wants:
+#         {"action":"read","files":[{"job":"...","name":"02_scf.in"}]}
+#         {"action":"answer","answer":"..."}
+#       Bounded at 2 rounds, 4 files and 60 kB, because a vc-relax .out is
+#       routinely over 150 kB. Filenames go through is_safe_filename and the
+#       job must appear in a manifest already filtered by user_id, so a
+#       requested "../../etc/passwd" is dropped. If the loop produces nothing
+#       it falls back to the one-shot answer, and then to running a real
+#       calculation.
+#
+#       This needs jobs.conversation_id: the worker had no way to find the
+#       earlier runs of the same chat. It is client-supplied and opaque, and
+#       every lookup is still filtered by user_id, so it grants no access on
+#       its own.
+#
 #  ⚠️ DATABASE MIGRATION: jobs.context (ALTER TABLE ... ADD COLUMN IF NOT
-#       EXISTS, additive, v46 pods ignore it — rollback needs no undo).
+#       EXISTS, additive, v46 pods ignore it — rollback needs no undo), plus
+#       jobs.conversation_id and its index, on the same terms.
 #
 # Also new since v45 was pushed:
 #
@@ -307,6 +328,11 @@ kubectl -n datahub-llm get pods -l app=tritondft-worker \
 #      from the run that just happened, in seconds, with no Material card and no
 #      plan. The worker log should show
 #          triage: followup — ...
+#      Then ask "what cutoff did the SCF step use?" — this one must send the
+#      follow-up to the FILES. The worker log should show
+#          followup: read N file(s), round 1
+#      and the answer must match what is actually in 02_scf.in. If it answers
+#      without reading, it is guessing.
 #      Then ask "what is a pseudopotential?" -> triage: chat, answered directly.
 #      Then ask something off-topic -> declined in one sentence.
 #      Then ask for a NEW material -> triage: calculate, full workflow as before.

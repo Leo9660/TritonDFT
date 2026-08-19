@@ -117,6 +117,10 @@ class Job(Base):
     # worker only ever received the single user message, which made "what was
     # that band gap again?" indistinguishable from a request to compute one.
     context = Column(Text)
+    # Which chat this request belongs to, so a follow-up can find the earlier
+    # runs it is being asked about. Client-supplied and opaque; every lookup is
+    # still filtered by user_id, so it grants no access on its own.
+    conversation_id = Column(String, index=True)
     output = Column(Text, default="", nullable=False)
     error = Column(Text)
     usage_log_id = Column(UUID(as_uuid=True))   # links to UsageLog for credit reconcile
@@ -173,6 +177,8 @@ def _run_migrations():
         "ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS model TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS can_use_cpu BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS context TEXT",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS conversation_id TEXT",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_conversation_id ON jobs (conversation_id)",
     ]
     with engine.begin() as conn:
         for stmt in migrations:

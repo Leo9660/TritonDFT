@@ -7,6 +7,7 @@ from prompt.info_query import api_call_prompt
 from prompt.slurm_execution import slurm_execution_prompt
 from prompt.final_answer import final_answer_prompt
 from prompt.intent import intent_prompt
+from prompt.followup import followup_prompt
 
 def _tool_vocabulary() -> str:
     """Render the dispatchable tool set from FN_MAP, so the planner prompt cannot
@@ -62,6 +63,8 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
         template = result_judge_prompt
     elif prompt_type == "api_call":
         template = api_call_prompt
+    elif prompt_type == "followup":
+        template = followup_prompt
     elif prompt_type == "intent":
         template = intent_prompt
     elif prompt_type == "final_answer":

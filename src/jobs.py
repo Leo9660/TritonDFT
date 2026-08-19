@@ -46,6 +46,7 @@ class CreateJobBody(BaseModel):
     plots: Optional[bool] = None   # experimental: render plots + extracted values
     # {"xc": "PBE"|"PBEsol"|"LDA", "relativistic": "SR"|"FR", "accuracy": "standard"|"stringent"}
     pseudo_choice: Optional[dict] = None
+    conversation_id: Optional[str] = None   # groups jobs so a follow-up can find them
 
 
 class StepActionBody(BaseModel):
@@ -207,6 +208,7 @@ def create_job(
         mode=mode,
         plots=bool(body.plots),
         context=_conversation_context(messages),
+        conversation_id=(str(body.conversation_id)[:64] if body.conversation_id else None),
         pseudo_choice=_clean_pseudo_choice(body.pseudo_choice),
     )
     db.add(job)
