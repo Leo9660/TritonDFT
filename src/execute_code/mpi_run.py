@@ -9,6 +9,33 @@ from execute_code.command_line import _run_bash_command, _run_commands
 from prompt.auto_parallel import auto_parallel_prompt
 
 
+def _kpool_flag(exec_path: str, parallel_np: int) -> str:
+    """`-nk` pools for pw.x / ph.x, when it helps and divides the rank count.
+
+    Plane-wave parallelism saturates: measured on 6-atom MoS2, 8 -> 32 ranks was
+    only 2.1x on its own, but 3.8x with pools, because the k-points parallelise
+    almost linearly while the FFT work does not. Set QE_NK=0 to disable.
+
+    Only pw.x and ph.x accept it; the post-processors do not, and passing it
+    there is an error rather than a no-op.
+    """
+    import os as _os
+
+    try:
+        nk = int(_os.environ.get("QE_NK", "0"))
+    except ValueError:
+        return ""
+    if nk <= 1 or parallel_np < 2:
+        return ""
+    binary = _os.path.basename(exec_path)
+    if binary not in ("pw.x", "ph.x"):
+        return ""
+    # A pool count that does not divide the ranks makes QE abort.
+    while nk > 1 and parallel_np % nk != 0:
+        nk -= 1
+    return f" -nk {nk}" if nk > 1 else ""
+
+
 def _describe_cmd(cmd: str) -> str:
     """A short, user-facing description of a QE invocation.
 
@@ -74,7 +101,7 @@ def run_with_mpirun(
             # bind to cores and allow oversubscription so the run launches (and
             # time-shares) instead of failing.
             f"mpirun --allow-run-as-root --bind-to none --oversubscribe -np {parallel_np} "
-            f"{shlex.quote(e)} -in {shlex.quote(inp)} | tee {shlex.quote(out)}"
+            f"{shlex.quote(e)}{_kpool_flag(e, parallel_np)} -in {shlex.quote(inp)} | tee {shlex.quote(out)}"
         ),
         output_paths=output_paths,
         timeout_seconds=timeout_seconds,
