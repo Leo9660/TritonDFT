@@ -1,3 +1,4 @@
+import sys as _sys
 import re, ast
 from typing import Dict, Any, List, Optional
 
@@ -109,8 +110,18 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
     if sg_symbol and "/" in sg_symbol and sg_number is None:
         sg_number = _spacegroup_number_from_symbol(sg_symbol)
         if sg_number is not None:
-            if verbose:
-                print(f"[MP] spacegroup_symbol={sg_symbol!r} would 500; querying by number {sg_number}")
+            # Debugging detail, not something a user can act on: the query is
+            # equivalent either way. Keep it in the pod log (the real stdout)
+            # and out of the stream the worker shows the user.
+            try:
+                stream = _sys.__stdout__
+                if stream is not None:
+                    stream.write(
+                        f"[MP] spacegroup_symbol={sg_symbol!r} returns HTTP 500 "
+                        f"upstream; querying by international number {sg_number} instead\n")
+                    stream.flush()
+            except Exception:
+                pass
             sg_symbol = None
         else:
             # Unknown symbol: drop the constraint rather than fail the whole run.
