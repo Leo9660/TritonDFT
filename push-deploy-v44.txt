@@ -65,6 +65,22 @@
 #       reads the run directory itself first, and the prompt names that section
 #       the authority on outcomes.
 #
+#  FIX  A band-gap workflow silently produced a meaningless DOS. (f6fe81d)
+#       Three faults in a row, the first ours by construction:
+#         1. A gap needs occupations='fixed' on the nscf. A 'fixed' run stores
+#            no broadening, so dos.x read degauss=0.0 — and the prompt told it
+#            to use bz_sum='smearing'. A Gaussian sum of zero width does not
+#            error: JOB DONE, full-length file, every value meaningless. Our
+#            recommended way to get a gap and our recommended way to get a DOS
+#            could not both be followed. &DOS now sets ngauss=0 and an explicit
+#            degauss=0.01 in that case (degauss is Ry; Emin/Emax/DeltaE are eV).
+#         2. .dos was not in USEFUL_EXTS, so qerun.dos was invisible in the file
+#            list and absent from the zip — it looked like it was never written.
+#            Nor were projwfc.x's outputs, whose "extension" is #3(d): every
+#            projected-DOS file was hidden. Names are matched now too.
+#         3. NaN survives float() and reaches the SVG path, rendering an empty
+#            box rather than nothing. Non-finite rows are dropped.
+#
 #  Frontend since v42 is already live on Pages (plan list now renders, per-step
 #  input/output tabs, conversation opens at its end, no failure styling on a
 #  step that is still running). Not in this image.
@@ -132,7 +148,19 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      executed, so "bands+dos" on it never meant dos.x ran. The plan chain is
 #      the thing that shows that.
 #
-#   d) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
+#   d) DOS, the one that has been failing. Run MoS2 asking for band gap AND
+#      total DOS. Then, in the step list, open 06_dos.in and confirm it now has
+#        ngauss=0
+#        degauss=0.01
+#      A DOS plot must appear. If 06_dos.out still says
+#        Gaussian broadening (read from file): ngauss,degauss=  0   0.000000
+#      the model ignored the new rule — tell me, that is a prompt failure.
+#
+#      Re-opening the OLD MoS2 run will now show qerun.dos in the file list
+#      (it was always there, just filtered out) but still no plot: the numbers
+#      in it are degenerate. That run has to be repeated to get a real DOS.
+#
+#   e) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
 #      It must fail ONCE, quickly, with RAMAN_REQUIRES_LDA — not grind through
 #      retries. Then switch the functional dropdown to LDA and re-run; that path
 #      should proceed.
