@@ -217,6 +217,30 @@ class DFTAgent:
             return any(term in choice for term in ("enabled", "include", "with soc", "lspinorb = true"))
         return False
 
+    @staticmethod
+    def _describe_pseudo_dir(path: str) -> str:
+        """'.../SR_v0.4.1/PBEsol_standard' -> 'PseudoDojo PBEsol · SR · standard'."""
+        import os as _os
+        lib = _os.path.basename(_os.path.normpath(path or ""))
+        rel = _os.path.basename(_os.path.dirname(_os.path.normpath(path or "")))
+        rel = "FR" if rel.upper().startswith("FR") else "SR" if rel.upper().startswith("SR") else "?"
+        xc, _, acc = lib.partition("_")
+        return f"PseudoDojo {xc or '?'} · {rel} · {acc or '?'}"
+
+    def _announce_pseudo(self, path: str) -> None:
+        """State the library ONCE, as soon as it is actually settled.
+
+        In auto mode the settings card can only show the fallback, and the
+        request may have named something else or the model may have chosen for
+        itself — so what the panel says before a run is not what ran. This is
+        the line that is true.
+        """
+        if getattr(self, "_pseudo_announced", None) == path or not path:
+            return
+        self._pseudo_announced = path
+        how = "from your request" if self._pseudo_mode() == "auto" else "fixed in settings"
+        print(f"[pseudo] Library for this run: {self._describe_pseudo_dir(path)} ({how})")
+
     def _pseudo_mode(self) -> str:
         return (self.pseudo_choice or {}).get("mode", "manual")
 
@@ -227,6 +251,15 @@ class DFTAgent:
             for name in ("LDA", "PBE", "PBESOL", "PBE_FR", "PBESOL_FR")
             if getattr(self.pseudo_dirs, name, None)
         ]
+
+    @staticmethod
+    def _written_pseudo_dir(path: str) -> str:
+        try:
+            m = re.search(r"(?mi)^\s*pseudo_dir\s*=\s*['\"]([^'\"]+)['\"]",
+                          Path(path).read_text(errors="ignore"))
+            return m.group(1) if m else ""
+        except OSError:
+            return ""
 
     def _guard_pseudo_dir(self, path: str) -> Optional[str]:
         """Reject a pseudo_dir the model invented.
@@ -441,6 +474,7 @@ User request:
         # The agent is reused across jobs, so a warning already shown for a
         # previous query must not suppress this one's.
         self._pseudo_conflict_warned = False
+        self._pseudo_announced = None
         if not self.pseudo_choice:
             return
         from config import resolve_pseudo_dir
@@ -1043,6 +1077,9 @@ User request:
                     replacement = self._guard_pseudo_dir(path)
                     if replacement:
                         patch_qe_input_file(path, new_pseudo_dir=replacement)
+                    self._announce_pseudo(replacement or self._written_pseudo_dir(path))
+                else:
+                    self._announce_pseudo(step_pseudo_dir)
                 # The first pw.x step of a run fixes the cutoffs every later step
                 # must reuse — they all read the same charge density.
                 if not self._run_cutoffs and fn_spec.exec == "pw.x":
