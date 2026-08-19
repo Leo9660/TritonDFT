@@ -387,6 +387,33 @@ async def list_job_files(
     return {"files": artifacts.list_files(run_dir)}
 
 
+@router.get("/{job_id}/steps/{step}/input")
+async def get_step_input(
+    job_id: str,
+    step: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """The generated QE input for one step, found by its task-oriented name.
+
+    The UI used to list the whole run directory and filter client-side, which
+    meant an iterdir+stat over every file in it — on a PVC that eight workers
+    are writing QE intermediates to, that is slow enough to look like a hang.
+    A glob for the step's own prefix touches almost nothing.
+    """
+    job = _owned_job(job_id, user, db)
+    run_dir = artifacts.safe_run_dir(job.run_dir)
+    if run_dir is None:
+        raise errors.job_not_found()
+    match = next(iter(sorted(run_dir.glob(f"{int(step):02d}_*.in"))), None)
+    if match is None or not match.is_file() or match.is_symlink():
+        return {"name": None, "text": None}
+    try:
+        return {"name": match.name, "text": match.read_text(errors="ignore")}
+    except OSError:
+        return {"name": None, "text": None}
+
+
 @router.get("/{job_id}/bands")
 async def get_job_bands(
     job_id: str,
