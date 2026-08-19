@@ -217,6 +217,40 @@ class DFTAgent:
             return any(term in choice for term in ("enabled", "include", "with soc", "lspinorb = true"))
         return False
 
+    def _pseudo_mode(self) -> str:
+        return (self.pseudo_choice or {}).get("mode", "manual")
+
+    def _known_pseudo_dirs(self) -> list:
+        """Every library this install actually has, as absolute paths."""
+        return [
+            getattr(self.pseudo_dirs, name)
+            for name in ("LDA", "PBE", "PBESOL", "PBE_FR", "PBESOL_FR")
+            if getattr(self.pseudo_dirs, name, None)
+        ]
+
+    def _guard_pseudo_dir(self, path: str) -> Optional[str]:
+        """Reject a pseudo_dir the model invented.
+
+        In auto mode we deliberately leave the model's own pseudo_dir in place,
+        which means it can write a directory that does not exist on this host.
+        Returns a replacement path when the file must be corrected, else None.
+        """
+        import os as _os
+        try:
+            text = Path(path).read_text(errors="ignore")
+        except OSError:
+            return None
+        m = re.search(r"(?mi)^\s*pseudo_dir\s*=\s*['\"]([^'\"]+)['\"]", text)
+        if not m:
+            return self.pseudo_dir
+        written = _os.path.realpath(_os.path.expanduser(m.group(1)))
+        for known in self._known_pseudo_dirs():
+            if written == _os.path.realpath(known):
+                return None
+        print(f"[pseudo] the generated input pointed at {m.group(1)!r}, which is not one "
+              f"of the installed libraries; using {self.pseudo_dir}")
+        return self.pseudo_dir
+
     _QUERY_XC_PATTERNS = (
         (r"\b(?:pbe\s*sol|pbesol)\b", "PBEsol"),
         (r"\b(?:lda|local[ -]density approximation)\b", "LDA"),
@@ -367,8 +401,10 @@ User request:
                 f" {acc} accuracy.",
                 "    - If the user's request names a functional or library, USE THAT — it",
                 "      overrides the default above.",
-                "    - Available: PBE and PBEsol in both SR and FR; LDA in SR only.",
-                "      There is no fully-relativistic LDA library, so SOC rules LDA out.",
+                "    - Write pseudo_dir yourself, as one of these EXACT absolute paths:",
+                *[f"        {d}" for d in self._known_pseudo_dirs()],
+                "      Any other path will be rejected and replaced. There is no",
+                "      fully-relativistic LDA library, so SOC rules LDA out.",
                 "    - Physics that follows from the choice: only LDA supports the third",
                 "      derivatives QE needs for Raman tensors; SOC requires an FR library;",
                 "      a stringent library needs a higher plane-wave cutoff than standard.",
@@ -981,8 +1017,10 @@ User request:
                             print("[solve_sub_problem] cleared _ph0 so the retry starts clean")
 
             input_paths = write_inputs(work_dir, scripts, suffix=".in", stem=step_stem)
-            
-            # Patch Inputs
+
+            # Patch Inputs. step_pseudo_dir is None when the user asked the agent
+            # to choose and the request named no library — the model's own
+            # pseudo_dir survives, guarded below.
             missing_pseudo_err: Optional[str] = None
             for path in input_paths:
                 patch_qe_input_file(
@@ -993,8 +1031,18 @@ User request:
                     pp_dir_clean=True,
                     force_new_step=False,
                     new_cutoffs=self._run_cutoffs,
-                    new_input_dft=(self.pseudo_choice or {}).get("xc"),
+                    # Only in manual mode. Forcing input_dft to the dropdown's
+                    # functional while the model picked its own library would
+                    # make the two contradict and trip PSEUDO_XC_MISMATCH.
+                    new_input_dft=(None if self._pseudo_mode() == "auto"
+                                   else (self.pseudo_choice or {}).get("xc")),
                 )
+                # With the model's own pseudo_dir left in place, make sure it
+                # names a library that exists here.
+                if step_pseudo_dir is None:
+                    replacement = self._guard_pseudo_dir(path)
+                    if replacement:
+                        patch_qe_input_file(path, new_pseudo_dir=replacement)
                 # The first pw.x step of a run fixes the cutoffs every later step
                 # must reuse — they all read the same charge density.
                 if not self._run_cutoffs and fn_spec.exec == "pw.x":
@@ -1119,7 +1167,8 @@ User request:
                         patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
                                             new_prefix=self._run_prefix if fn_spec.takes_prefix else None,
                                             pp_dir_clean=True, new_cutoffs=self._run_cutoffs,
-                                            new_input_dft=(self.pseudo_choice or {}).get("xc"))
+                                            new_input_dft=(None if self._pseudo_mode() == "auto"
+                                                           else (self.pseudo_choice or {}).get("xc")))
 
             # Record this step's FINAL inputs (post-patch, post-user-edit) so later
             # steps can see them. Truncating to the entry-time mark first keeps a
