@@ -1,0 +1,116 @@
+# =============================================================================
+# TritonDFT — build / push image v39 + deploy to NRP
+#
+# Run on the HOST machine (needs docker + kubectl). Run line by line.
+# v39 because image tags are IMMUTABLE — v37 is live, never reuse a tag.
+#
+# WHAT'S IN v39 (commits 0af6219..9335b2e, i.e. everything after v37)
+# -----------------------------------------------------------------------------
+#  PERF  32 MPI ranks per job (was 8) + k-point pools (-nk 8).
+#        Measured on 6-atom MoS2: 8->32 ranks alone was only 2.1x, but 3.8x with
+#        pools, because k-points parallelise almost linearly while the FFT work
+#        does not. MoS2 vc-relax should go 28 min -> ~7-8 min.
+#  FEAT  User-selectable pseudopotentials (functional / relativistic / accuracy).
+#        HARD-ENFORCED by patching pseudo_dir in the generated input, not by
+#        prompt injection — the model cannot override the user's choice.
+#        The choice IS also shown to the model, because it constrains cutoffs
+#        (stringent needs a higher ecutwfc) and decides whether SOC is possible.
+#  FIX   Coordinate precision. The model was writing 0.6667 where the value is
+#        2/3 — a 3.3e-5 error, above QE's symmetry tolerance (accep = 1e-5).
+#        That cut detected symmetry ops 24 -> 8 and inflated the irreducible
+#        k-points ~40 -> 129, i.e. a ~3x slowdown from rounding alone.
+#  FIX   Magic-link sign-in returned 422 for EVERY user. FastAPI treats a bare
+#        `str` parameter as a QUERY param, so the frontend's JSON body was
+#        rejected. Now a Pydantic body model. (This is the login bug.)
+#  FIX   ph.x retry inherited stale _ph0 recovery state -> "wrong ldisp".
+#  FIX   Parser looked for the old output_N_M.out names after the rename.
+#  FIX   Post-processing tools (dos.x/projwfc.x/q2r.x/matdyn.x/dynmat.x) were
+#        generated with ZERO format guidance — fn_section never reached the
+#        prompt.
+#  FEAT  Task-oriented filenames, immutable retry attempt dirs, scratch cleanup.
+#  CHORE Default model gpt-4o -> gpt-5.2.
+#
+# NOT in this image: the chat frontend. It deploys to GitHub Pages from
+# TritonDFT-chat and is already live (44c4101).
+# =============================================================================
+
+# ---- 0. Re-auth to NRP (tokens last ~21 min, this is why kubectl 401s) ------
+#   https://portal.nrp-nautilus.io/  ->  Get Config  ->  overwrite ~/.kube/config
+#   (CILogon; use the UCSD login.) Then confirm:
+kubectl config current-context
+kubectl -n tritondft get pods
+
+# ---- 1. Make sure the tree is what you want in the image -------------------
+cd ~/workspace/TritonDFT
+git pull
+git log --oneline -1        # expect 9335b2e perf: allow 32 cores per job ...
+git status --porcelain      # should be clean apart from local scratch files
+
+# ---- 2. Build & push (tag = v39) -------------------------------------------
+docker login                                    # push to docker.io/yil384
+docker build -t yil384/tritondft:v39 .
+docker push yil384/tritondft:v39
+
+#   requirements.txt and Dockerfile have not changed since v32, so the pip layer
+#   is cached and this is a fast build. Do NOT pass --no-cache.
+
+# ---- 3. Deploy --------------------------------------------------------------
+#   Both manifests are already pinned to v39 with imagePullPolicy: Always,
+#   so `apply` is enough — no `set image` needed.
+kubectl -n tritondft apply -f k8s/deployment.yaml
+kubectl -n tritondft apply -f k8s/worker.yaml
+
+kubectl -n tritondft rollout status deploy/tritondft --timeout=300s
+kubectl -n tritondft rollout status deploy/tritondft-worker --timeout=600s
+
+#   If a rollout stalls with pods Pending, it is the 32-core limit (see RISK
+#   below), not a bad image. Check with:
+#     kubectl -n tritondft describe pod -l app=tritondft-worker | tail -30
+
+# ---- 4. Verify the image actually changed ----------------------------------
+#   Past deploys silently no-op'd (same tag pushed twice, IfNotPresent not
+#   repulling). Confirm the running digest, not just the tag:
+kubectl -n tritondft get pods -l app=tritondft-worker \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+
+#   And that the new env reached the container:
+kubectl -n tritondft exec deploy/tritondft-worker -- sh -c 'echo JOB_NP=$JOB_NP QE_NK=$QE_NK'
+#   expect: JOB_NP=32 QE_NK=8
+
+# ---- 5. Smoke test ----------------------------------------------------------
+#   a) Login is the highest-risk fix — test it FIRST, from the real site:
+#      request a magic link, click it, confirm no 422.
+#
+#   b) Then run one job end to end and watch the ranks:
+kubectl -n tritondft logs -l app=tritondft-worker -f --tail=100 | grep -E "runner|nk"
+#      expect a line like:
+#        [runner] cmd: mpirun ... -np 32 /workspace/QuantumE/bin/pw.x -nk 8 -in relax.in
+#      -nk must appear ONLY for pw.x and ph.x. If you see it on dos.x/matdyn.x
+#      the run will abort — that would be a bug in _kpool_flag().
+#
+#   c) Confirm the pseudopotential dropdown is enforced, not suggested:
+#      pick PBEsol / FR / stringent, run, then check the generated input:
+#        pseudo_dir must point at PseudoDojo/FR_v0.4/PBEsol_stringent
+
+# =============================================================================
+# RISK — read before deploying
+# -----------------------------------------------------------------------------
+# 8 replicas x 32 CPU limit = a 256-core burst ceiling in one namespace, on
+# priorityClassName: opportunistic. Requests stay at 4 (so 32 cores guaranteed
+# total, which schedules fine) but the burst headroom is now 8x the request,
+# up from 4x. Two consequences:
+#
+#   1. NRP policy. We already run afoul of two of their usage policies and have
+#      no fixed core allocation; a 256-core burst makes us more visible, and
+#      opportunistic pods are the first thing culled. If workers start getting
+#      evicted after this, the CPU limit is the first thing to lower — try
+#      cpu: 16 and QE_NK 4 before blaming anything else.
+#
+#   2. CFS throttling. On a busy node the limit is aspirational: the kernel
+#      throttles back toward the 4-core request. The 3.8x speedup was measured
+#      on a quiet node and is a best case, not a guarantee.
+#
+# Rollback: manifests are pinned by tag, so
+#   kubectl -n tritondft set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v37
+#   kubectl -n tritondft set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v37
+# =============================================================================
