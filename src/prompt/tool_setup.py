@@ -35,6 +35,7 @@ parameter_prompt = {
 
     ### The whole user query is:
     {query}.
+    {pseudo_context}
     {previous_memory}
     ### Current Problem to Solve:
     {subproblem}.

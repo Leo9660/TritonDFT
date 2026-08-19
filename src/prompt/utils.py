@@ -126,6 +126,15 @@ def get_prompt(prompt_type: str, **kwargs) -> List[Dict[str, str]]:
     else:
         kwargs["query_info"] = ""
     # ----------------------------------------
+    # --- pseudopotential context ---
+    # The library is fixed by the user and enforced by patching, but the model
+    # still has to KNOW it: the choice constrains cutoffs (a stringent library
+    # needs a higher ecutwfc than a standard one), decides whether SOC is even
+    # possible, and changes which functional-specific corrections apply. This
+    # reaches the PARAMETER prompt as well as the script prompt, because cutoffs
+    # are proposed there.
+    pc = kwargs.get("pseudo_context", "")
+    kwargs["pseudo_context"] = str(pc) if pc else ""
     # --- inject header for available_files ---
     # Post-processing codes are addressed by FILENAME (fildyn, flfrc, filband),
     # not by prefix, and the model was guessing those names — asking dynmat.x for
