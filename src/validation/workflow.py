@@ -204,6 +204,50 @@ def _upf_xc_family(path: Path) -> str:
     return _xc_family(match.group(1)) if match else ""
 
 
+def _sibling_xc_family(path: str) -> str:
+    """The XC family this run is using, read from the pw.x inputs beside a
+    ph.x input.
+
+    A ph.x input has no &system and names no pseudopotentials, so it cannot say
+    which functional is in play — but every step of a run shares one, and the
+    pw.x steps in the same directory do declare it. Prefers an explicit
+    input_dft; otherwise reads the functional out of the UPF headers.
+
+    Returns "" when it cannot tell, and callers must treat that as "no opinion"
+    rather than as a negative.
+    """
+    try:
+        siblings = sorted(Path(path).resolve().parent.glob("*.in"))
+    except OSError:
+        return ""
+    for f in siblings:
+        if str(f) == str(Path(path).resolve()):
+            continue
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        if not re.search(r"(?mi)^\s*&system\b", text):
+            continue
+        family = _xc_family(_value(_namelist(text, "system"), "input_dft"))
+        if family:
+            return family
+        pseudo_dir_value = _value(_namelist(text, "control"), "pseudo_dir")
+        if not pseudo_dir_value:
+            continue
+        pseudo_dir = Path(pseudo_dir_value).expanduser()
+        if not pseudo_dir.is_absolute():
+            pseudo_dir = f.parent / pseudo_dir
+        _, species_rows = _card_rows(text, "ATOMIC_SPECIES")
+        for row in species_rows:
+            tokens = row.split()
+            if len(tokens) >= 3:
+                family = _upf_xc_family(pseudo_dir / tokens[2])
+                if family:
+                    return family
+    return ""
+
+
 def _upf_is_fully_relativistic(path: Path) -> bool:
     if not path.is_file():
         return False
@@ -316,8 +360,26 @@ def validate_qe_input(path: str, *, tool: str = "", query: str = "") -> List[Val
         for key in ("prefix", "outdir", "fildyn", "tr2_ph"):
             if not _value(body, key):
                 add("fatal", "PH_KEY_MISSING", f"ph.x input is missing {key}.")
-        if _requested(query, r"raman") and _value(body, "lraman").lower() not in {".true.", "true"}:
-            add("error", "RAMAN_NOT_IN_THIS_PH", "A Raman ph.x step must enable lraman=.true..")
+        if _requested(query, r"raman"):
+            lraman_on = _value(body, "lraman").lower() in {".true.", "true"}
+            xc = _sibling_xc_family(path)
+            if xc in {"pbe", "pbesol"}:
+                # Demanding lraman here would be unsatisfiable, and used to be:
+                # with lraman off the step was rejected, and with it on QE
+                # aborted with "third order derivatives not implemented with
+                # GGA". The agent burned every retry oscillating between the
+                # two. Raman tensors in ph.x are a third-order response and QE
+                # implements them for LDA only, so say that once and stop.
+                add(
+                    "fatal",
+                    "RAMAN_REQUIRES_LDA",
+                    f"Quantum ESPRESSO computes Raman tensors only for LDA; this run uses "
+                    f"{xc.upper()}, for which the third-order derivatives are not implemented. "
+                    f"Re-run with an LDA functional and an LDA pseudopotential library, or drop "
+                    f"the Raman step and report the Gamma-point phonon frequencies alone.",
+                )
+            elif not lraman_on:
+                add("error", "RAMAN_NOT_IN_THIS_PH", "A Raman ph.x step must enable lraman=.true..")
 
     elif exec_name == "bands.x":
         body = _namelist(text, "bands")
