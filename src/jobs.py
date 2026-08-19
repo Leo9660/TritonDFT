@@ -203,10 +203,13 @@ async def get_job(
         "queue_position": _queue_position(db, job) if job.status == "queued" else None,
         "credits_remaining": user.credits,
         "created_at": job.created_at.isoformat() if job.created_at else None,
-        # The gap/energy cards come from the same experimental extraction as the
-        # plots, so they are gated together: with plots off the user gets the log
-        # and the downloadable files, nothing inferred.
-        "result": job.result if job.plots else None,
+        # With plots off the user gets no INFERRED numbers: the gap/energy cards
+        # come from the same experimental extraction as the plots, so they are
+        # gated together. The agent's own written conclusion is not inferred by
+        # us — it is the answer to the question that was asked — so it survives
+        # the toggle. Suppressing it too left a finished run saying nothing at
+        # all, which read as a failure.
+        "result": _narrative_only(job.result) if not job.plots else job.result,
         "has_artifacts": bool(job.run_dir),
         "model": job.model,
         "script_only": bool(job.script_only),
@@ -219,6 +222,16 @@ async def get_job(
         "pending_plan": job.pending_plan if job.status == "awaiting_plan" else None,
         "plan": job.plan,
     }
+
+
+def _narrative_only(result):
+    """The parts of a result that we did not infer: what was run, and what the
+    agent concluded. Everything else (gap, energies, plot series) is the
+    experimental extraction the plots toggle governs."""
+    if not isinstance(result, dict):
+        return None
+    kept = {k: result[k] for k in ("analysis", "material", "task_type") if result.get(k)}
+    return kept or None
 
 
 @router.post("/{job_id}/cancel")
