@@ -564,7 +564,7 @@ def main():
             log(f"startup sweep: cleaned {n} stale run dir(s), {freed / 1048576:.0f} MB freed")
 
     agent = DFTAgent(
-        model=os.environ.get("DEFAULT_MODEL", "gpt-4o"),
+        model=os.environ.get("DEFAULT_MODEL", "gpt-5.2"),
         dft_tool="quantum espresso",
         verbose=True,
         backend="openai",
