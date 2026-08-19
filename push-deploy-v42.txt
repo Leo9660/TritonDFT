@@ -1,0 +1,114 @@
+# =============================================================================
+# TritonDFT — build / push image v42 + deploy to NRP
+#
+# Run on the HOST machine (needs docker + kubectl). Run line by line.
+# v42 because image tags are IMMUTABLE — v40 is live, never reuse a tag.
+#
+# NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
+#
+# ⚠️  THE FRONTEND IS ALREADY AHEAD OF PRODUCTION.
+#     The chat UI auto-deploys to GitHub Pages on every push; the backend needs
+#     this manual image build. So the admin page currently shows an "OpenAI API
+#     key" card whose endpoints do not exist in v40 — that is the "not found"
+#     you are seeing. Deploying v42 closes the gap.
+#
+# WHAT'S IN v42
+# -----------------------------------------------------------------------------
+#  FIX   can_use_cpu never existed on the server. The admin page's CPU button
+#        has always been a no-op: not a column on users, not a field on
+#        UserUpdate, not returned by /admin/users or /me. Pydantic drops unknown
+#        fields silently, so the PATCH returned 200 with an unchanged user and
+#        the UI had nothing to react to. Consequence: the ONLY way to grant CPU
+#        access was is_unlimited or is_admin — which also hands out free credits.
+#
+#  FEAT  Admin-settable OpenAI key override. The key lives in the k8s secret,
+#        which needs cluster access and a rollout to change — not workable when
+#        it runs out of credit mid-workshop and the kubectl token expires every
+#        ~21 min. An admin can now set an override that workers pick up on their
+#        NEXT JOB (no restart), and revert to the secret when done.
+#
+#  FEAT  v41's final-answer synthesis, if v41 was never deployed (it wasn't —
+#        v40 is live). The Analysis section is now an actual answer to the
+#        question rather than the per-step verdicts concatenated.
+#
+# ⚠️  THIS RELEASE HAS A DATABASE MIGRATION — the first since the plots column.
+#        users.can_use_cpu   (ALTER TABLE ... ADD COLUMN IF NOT EXISTS)
+#        app_settings        (new table, created by Base.metadata.create_all)
+#     Both run automatically at startup via init_db(). Both are additive and
+#     backwards-compatible: v40 pods keep working against the migrated schema,
+#     so a rollback does NOT require undoing them.
+# =============================================================================
+
+# ---- 0. Re-auth to NRP (tokens last ~21 min) --------------------------------
+#   https://portal.nrp-nautilus.io/  ->  Get Config  ->  overwrite ~/.kube/config
+kubectl -n datahub-llm get pods
+
+# ---- 1. Back up the database BEFORE a migration -----------------------------
+#   Additive and reversible on paper, but this is the workshop database.
+kubectl -n datahub-llm exec deploy/postgres -- \
+  pg_dump -U postgres tritondft > ~/tritondft-backup-pre-v42.sql
+ls -lh ~/tritondft-backup-pre-v42.sql        # must be non-empty
+
+# ---- 2. Pull ----------------------------------------------------------------
+cd ~/workspace/TritonDFT
+git pull
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v42
+ls src/prompt/final_answer.py                          # v41's prompt, must exist
+
+# ---- 3. Build & push --------------------------------------------------------
+docker login
+docker build -t yil384/tritondft:v42 .
+docker push yil384/tritondft:v42
+
+# ---- 4. Deploy --------------------------------------------------------------
+#   API FIRST. It runs init_db() on startup, so the schema is migrated before
+#   workers begin claiming jobs against it.
+kubectl apply -f k8s/deployment.yaml
+kubectl -n datahub-llm rollout status deploy/tritondft --timeout=300s
+
+#   Confirm the migration landed before touching the workers:
+kubectl -n datahub-llm exec deploy/postgres -- \
+  psql -U postgres -d tritondft -c "\d users" | grep can_use_cpu
+kubectl -n datahub-llm exec deploy/postgres -- \
+  psql -U postgres -d tritondft -c "\dt app_settings"
+
+kubectl apply -f k8s/worker.yaml
+kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=900s
+
+#   "7 of 8 updated replicas are available…" repeating is NORMAL — maxUnavailable
+#   is 1 and a pod mid-calculation burns the full 60s grace period, so the worker
+#   rollout can take ~8 minutes.
+
+# ---- 5. Smoke test ----------------------------------------------------------
+#   a) OpenAI key card (admin page). It should now LOAD instead of 404:
+#      - shows "k8s secret · …xxxx" with the fingerprint of the current key
+#      - paste a working key, Set key -> shows "override · …yyyy"
+#      - run one job: it must succeed on the new key
+#      - Revert -> back to "k8s secret · …xxxx"
+#      The value is never displayed anywhere. That is intentional.
+#
+#   b) CPU button. Pick a NON-admin, NON-unlimited user and click the CPU icon.
+#      It must turn green and stay green after Refresh. Then, signed in as that
+#      user, the script-only lock should be released without them having
+#      unlimited credits.
+#
+#   c) Final answer (v41, first time in production). Run bulk Si band gap; the
+#      Analysis block must OPEN with the gap and its units, not with a list of
+#      "Step 1: … Step 2: …" verdicts.
+
+# =============================================================================
+# Rollback
+#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v40
+#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v40
+#
+#   Leave the schema alone — both changes are additive and v40 ignores them.
+#   Rolling back the image WITHOUT rolling back the frontend puts you back in
+#   today's state: the admin key card 404s again.
+#
+# Note on the key override: it is stored in Postgres in PLAINTEXT and therefore
+# appears in the backup you took in step 1. Deliberate — encrypting it with a
+# key that also lives in this cluster would not raise the bar for anyone who can
+# already read the database. It is admin-only, never returned by any endpoint
+# (fingerprint only), and never written to the audit log. Treat that .sql backup
+# as a secret: it now contains one.
+# =============================================================================
