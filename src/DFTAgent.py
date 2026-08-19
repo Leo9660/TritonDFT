@@ -1829,8 +1829,18 @@ User request:
         plan_and_query_time = time.perf_counter() - t_plan_query_start
 
         if not subproblems:
-            if self.verbose:
-                print("[run] No valid plan generated. Exiting.")
+            # Unconditional, and in the "> ⚠️" shape the UI actually surfaces.
+            # This used to be verbose-gated AND in a shape the frontend's parser
+            # discards, so the planner declining to produce steps reached the
+            # user as a blank card reading "Complete · 0 steps" — no error, no
+            # explanation, nothing to act on.
+            print("> ⚠️ I could not turn this into a calculation.\n"
+                  "> \n"
+                  "> The planner needs a material and a property to compute — "
+                  "something like \"the band structure of silicon\" or \"the "
+                  "lattice constant of MgO\". If you were asking about a run that "
+                  "already happened, ask in the same conversation as that run and "
+                  "it will be answered from it.")
             return None
 
         # Publish the plan (and, in assistant mode, block for the user's review /
