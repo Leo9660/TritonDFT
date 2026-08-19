@@ -1531,6 +1531,40 @@ User request:
             return None
         return path.name
 
+    def _extracted_facts(self) -> str:
+        """What is actually ON DISK when the run ends: the numbers parsed out of
+        the QE outputs, and which plottable files exist.
+
+        Without this the synthesis sees only the per-step prose, which produced
+        two failures on the same page: it said the band gap "was not extracted"
+        while the result card beside it showed 1.218 eV, and it reported a DOS
+        "written to system_1.dos.dat" when dos.x had written nothing at all —
+        it was narrating the input file's intent rather than the outcome.
+        """
+        lines = []
+        try:
+            from artifacts import extract_result, parse_bands, parse_dos
+            res = extract_result(self.work_dir) or {}
+            for key, label, unit in (
+                ("band_gap_ev", "band gap", "eV"),
+                ("final_energy_ev", "final total energy", "eV"),
+            ):
+                if isinstance(res.get(key), (int, float)):
+                    lines.append(f"- {label}: {res[key]:.4f} {unit} (parsed from the QE output)")
+            if parse_bands(self.work_dir):
+                lines.append("- a band-structure file was written and is plottable")
+            dos = parse_dos(self.work_dir) or {}
+            if dos.get("total"):
+                lines.append("- a total-DOS file was written and is plottable")
+            else:
+                lines.append("- NO total-DOS file was written")
+            if dos.get("projected"):
+                lines.append("- projected-DOS files were written")
+        except Exception as e:
+            if self.verbose:
+                print(f"[analysis] could not read extracted facts: {e}")
+        return "\n".join(lines) or "(nothing could be parsed from the outputs)"
+
     def _final_answer(self, query: str, conclusions: list) -> str:
         """Synthesise the per-step verdicts into an answer to the question asked.
 
@@ -1556,7 +1590,8 @@ User request:
                 for i, st in enumerate(ordered)
             ) or "(not recorded)"
             messages = get_prompt(prompt_type="final_answer", query=query,
-                                  plan=plan_txt, step_conclusions=joined)
+                                  plan=plan_txt, step_conclusions=joined,
+                                  extracted=self._extracted_facts())
             out = self.generator(messages[0]["content"],
                                  max_new_tokens=self.max_new_tokens,
                                  return_full_text=False)
