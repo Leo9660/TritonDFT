@@ -9,9 +9,15 @@
 #
 # WHAT'S IN v47
 #
-# This supersedes v45 rather than adding to it. The list below is everything
-# since v44; whichever commit your v45 image was built from, v47 contains all of
-# it, so run every verification step regardless of what you already checked.
+# This supersedes v46. The list below is everything since v44, because the
+# commit v45 and v46 were built from is not known here — run every verification
+# step regardless of what you already checked on an earlier tag.
+#
+# NOT IN THIS RELEASE, and worth being explicit about: continuing a calculation
+# from an earlier one. "Now compute the DOS for the same material" is triaged as
+# "calculate" and starts over — a fresh Materials Project lookup and a fresh
+# relaxation. A follow-up can READ the earlier run's files, but nothing carries
+# its charge density or relaxed geometry forward.
 #
 # New since v46:
 #
