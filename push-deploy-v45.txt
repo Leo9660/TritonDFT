@@ -119,6 +119,25 @@
 #  NO database migration in this release. NO dependency changes.
 # =============================================================================
 
+# ⚠️ RESOURCE CHANGE IN THIS RELEASE — read before applying k8s/worker.yaml
+#      JOB_NP          32 -> 8     ranks now equal the GUARANTEED cores
+#      QE_NK            8 -> 0     pools measured to do nothing at this size
+#      requests.cpu     4 -> 8     the scheduler now promises what we launch
+#      limits.cpu      32 -> 16    burst headroom, not a target
+#      replicas         8 (unchanged) — concurrency is not reduced
+#
+#      Reserved total goes 32 -> 64 cores. Still placeable on an opportunistic
+#      priority class; 8 x 32 = 256 would not have been.
+#
+#      Why: runs reported 11.6s CPU against 26.8s wall — more than half the time
+#      descheduled, because 32 ranks were launched against a 4-core guarantee,
+#      paying the communication cost of 32 for the throughput of 4. Measured on
+#      diamond Si, 8 ranks is 0.89s and 32 is 0.60s, while the harness around
+#      each step costs ~30s. There was nothing to buy up there.
+#
+#      If workers start going Pending after this, the reservation is the cause:
+#      drop requests.cpu and JOB_NP together, never one without the other.
+
 # ---- 0. Re-auth to NRP (tokens last ~21 min) --------------------------------
 #   https://portal.nrp-nautilus.io/  ->  Get Config  ->  overwrite ~/.kube/config
 kubectl -n datahub-llm get pods
