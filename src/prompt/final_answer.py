@@ -20,6 +20,9 @@ final_answer_prompt = {
     ### What each step concluded, in order
     {step_conclusions}
 
+    ### What is actually on disk, parsed from the outputs
+    {extracted}
+
     ### Task
     Answer the question. Write for someone who asked it and did not watch the run.
 
@@ -39,9 +42,13 @@ final_answer_prompt = {
       explicitly instead of answering a nearby question you can answer.
 
     Hard constraints:
-    - Use ONLY numbers that appear in the step conclusions above. Never
-      substitute a literature or remembered value. If a quantity was not
-      computed, say it was not computed.
+    - Use ONLY numbers that appear above. Never substitute a literature or
+      remembered value. If a quantity was not computed, say it was not computed.
+    - The parsed section is the authority on outcomes. If a step said it would
+      write a file and the parsed section says none was written, the file was
+      NOT written — report that, do not repeat the step's intention as fact.
+      If a step says a quantity could not be determined but the parsed section
+      has it, use the parsed value.
     - If the steps disagree, say which one you trust and why.
     - Plain prose. No JSON, no markdown headings, no bullet lists. Under 200 words.
     - Do not describe your own reasoning process.
