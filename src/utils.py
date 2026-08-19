@@ -65,6 +65,7 @@ def patch_qe_input_file(
     pp_map: Optional[Dict[str, str]] = None,  # species name -> pseudopotential file path (absolute or relative)
     pp_dir_clean: Optional[bool] = False,
     force_new_step: bool = False,
+    new_input_dft: Optional[str] = None,
     new_cutoffs: Optional[Dict[str, str]] = None,   # {"ecutwfc": "80", "ecutrho": "320"}
 ) -> None:
     """
@@ -114,6 +115,20 @@ def patch_qe_input_file(
     # step's input comes from an independent LLM call that cannot see the earlier
     # file, so asking the model to "reuse the same cutoffs" does not hold — it
     # drifts (e.g. ecutrho 320 -> 360 on the bands step). Pin them numerically.
+    # Keep input_dft consistent with the pseudopotential library. Pointing at the
+    # LDA library while leaving input_dft='PBE' is not an error QE refuses — it
+    # overrides the pseudo's own functional and quietly computes with a
+    # mismatched one, which is worse than failing. Only rewrite the key when it
+    # is already present; when absent QE takes the functional from the UPF, which
+    # is what we want.
+    if new_input_dft:
+        pattern = re.compile(
+            r"(^[ \t]*input_dft[ \t]*=[ \t]*)(?:['\"]?)([^,'\"\n]*)(?:['\"]?)",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if pattern.search(text):
+            text = pattern.sub(rf"\1'{new_input_dft}'", text)
+
     if new_cutoffs:
         for key, value in new_cutoffs.items():
             pattern = re.compile(

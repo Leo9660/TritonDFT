@@ -111,3 +111,56 @@ class Config:
             remote_qe_bin_dir=remote_qe_bin_dir or "",
             path=path,
         )
+
+# ── Pseudopotential library selection ────────────────────────────────────────
+# PseudoDojo ships a regular tree:
+#     <root>/SR_v0.4.1/<XC>_<accuracy>      scalar-relativistic
+#     <root>/FR_v0.4/<XC>_<accuracy>        fully relativistic (for SOC)
+# so the three axes a user picks (functional, relativistic treatment, accuracy)
+# map onto a path without asking them to configure ten directories. The root is
+# derived from whatever they already configured for PBE.
+XC_CHOICES = ("LDA", "PBE", "PBEsol")
+REL_CHOICES = ("SR", "FR")
+ACCURACY_CHOICES = ("standard", "stringent")
+# PseudoDojo publishes no fully-relativistic LDA library.
+UNAVAILABLE = {("LDA", "FR")}
+DEFAULT_PSEUDO_CHOICE = ("PBE", "SR", "standard")
+
+_REL_DIRS = {"SR": "SR_v0.4.1", "FR": "FR_v0.4"}
+
+
+def resolve_pseudo_dir(pseudo_paths, xc: str, rel: str, accuracy: str):
+    """Map (functional, relativistic treatment, accuracy) to a library path.
+
+    Returns (path, error). `error` is set when the combination does not exist,
+    in which case the caller should fall back rather than run with the wrong
+    pseudopotentials.
+    """
+    import os
+
+    xc = (xc or "PBE").strip()
+    rel = (rel or "SR").strip().upper()
+    accuracy = (accuracy or "standard").strip().lower()
+
+    canonical = {c.lower(): c for c in XC_CHOICES}
+    xc = canonical.get(xc.lower(), xc)
+
+    if xc not in XC_CHOICES:
+        return None, f"unknown functional {xc!r}"
+    if rel not in REL_CHOICES:
+        return None, f"unknown relativistic treatment {rel!r}"
+    if accuracy not in ACCURACY_CHOICES:
+        return None, f"unknown accuracy {accuracy!r}"
+    if (xc, rel) in UNAVAILABLE:
+        return None, f"PseudoDojo has no fully-relativistic {xc} library"
+
+    # <root>/<SR_v0.4.1|FR_v0.4>/<XC>_<accuracy>, root taken from the configured
+    # PBE entry so a site-specific install location still works.
+    base = getattr(pseudo_paths, "PBE", "") or ""
+    root = os.path.dirname(os.path.dirname(base))
+    if not root:
+        return None, "pseudopotential root is not configured"
+    path = os.path.join(root, _REL_DIRS[rel], f"{xc}_{accuracy}")
+    if not os.path.isdir(path):
+        return None, f"library not present on disk: {path}"
+    return path, None

@@ -112,6 +112,7 @@ class DFTAgent:
         mpid_output_file: Optional[str] = None,
         qe_timeout_seconds: int = 600,
         force_vc_relax: bool = True,
+        pseudo_choice: Optional[Dict[str, str]] = None,
     ):
         self.config_name = config_name or "config.yaml"
         self.config = Config.load(self.config_name)
@@ -141,6 +142,13 @@ class DFTAgent:
         self.qe_timeout_seconds = qe_timeout_seconds
         self.pseudo_dirs = self.config.pseudo
         self.pseudo_dir = self.config.pseudo.PBE
+        # An explicit user choice (functional / relativistic treatment /
+        # accuracy) from the UI. When set it OVERRIDES the regex that otherwise
+        # guesses the functional from the query text — a dropdown is a promise
+        # that the selected value is the one actually used, so it cannot be left
+        # to pattern-matching that silently falls back to PBE.
+        self.pseudo_choice = dict(pseudo_choice) if pseudo_choice else None
+        self._apply_pseudo_choice()
         self.qe_bin_prefix = self.config.qe_bin_dir
         self.remote_qe_bin_prefix = self.config.remote_qe_bin_dir
         
@@ -217,6 +225,9 @@ class DFTAgent:
         target_scope: str = "step",
     ) -> str:
         """Select an XC/SOC-compatible library from explicit request or scoped assessment."""
+        # An explicit UI choice wins over parsing the query text.
+        if self.pseudo_choice:
+            return self.pseudo_dir
         text = request or ""
         needs_soc = (
             self._assessment_enables_soc(assessment)
@@ -298,6 +309,27 @@ User request:
         if not isinstance(assessment, dict) or not assessment.get("summary"):
             raise ValueError("Scientific assessment did not return the required JSON strategy.")
         return assessment
+
+    def _apply_pseudo_choice(self):
+        """Resolve the explicit pseudopotential choice, if any, onto pseudo_dir."""
+        if not self.pseudo_choice:
+            return
+        from config import resolve_pseudo_dir
+        path, err = resolve_pseudo_dir(
+            self.pseudo_dirs,
+            self.pseudo_choice.get("xc"),
+            self.pseudo_choice.get("relativistic"),
+            self.pseudo_choice.get("accuracy"),
+        )
+        if err or not path:
+            print(f"[pseudo][warn] requested library unavailable ({err}); "
+                  f"keeping {self.pseudo_dir}")
+            self.pseudo_choice = None
+            return
+        self.pseudo_dir = path
+        print(f"[pseudo] Using {self.pseudo_choice.get('xc')} · "
+              f"{self.pseudo_choice.get('relativistic')} · "
+              f"{self.pseudo_choice.get('accuracy')} ({path})")
 
     @staticmethod
     def _sanitize_name(name: str, max_len: int = 40) -> str:
@@ -751,6 +783,19 @@ User request:
             t_script_start = time.perf_counter()
             
             tool_requirements = build_tool_requirements(fn_spec, self.pseudo_dirs)
+            if self.pseudo_choice:
+                # Tell the model what was chosen so its OTHER decisions stay
+                # coherent (LDA is the only functional QE can do Raman with;
+                # layered systems need vdW under PBE). The value itself is still
+                # enforced by patching, not by trusting this text.
+                tool_requirements = (
+                    f"### Fixed by the user — do not change\n"
+                    f"    - Exchange-correlation functional: {self.pseudo_choice.get('xc')}\n"
+                    f"    - Pseudopotentials: {self.pseudo_choice.get('relativistic')} "
+                    f"({'fully relativistic, SOC-capable' if self.pseudo_choice.get('relativistic') == 'FR' else 'scalar-relativistic'}), "
+                    f"{self.pseudo_choice.get('accuracy')} accuracy\n"
+                    f"    - Choose cutoffs appropriate for this library.\n\n"
+                ) + tool_requirements
             
             # Construct Prompt
             if loop_count > 1:
@@ -866,6 +911,7 @@ User request:
                     pp_dir_clean=True,
                     force_new_step=False,
                     new_cutoffs=self._run_cutoffs,
+                    new_input_dft=(self.pseudo_choice or {}).get("xc"),
                 )
                 # The first pw.x step of a run fixes the cutoffs every later step
                 # must reuse — they all read the same charge density.
@@ -984,7 +1030,8 @@ User request:
                     for path in input_paths:
                         patch_qe_input_file(path, new_pseudo_dir=self.pseudo_dir, new_outdir=self.out_dir,
                                             new_prefix=self._run_prefix if fn_spec.takes_prefix else None,
-                                            pp_dir_clean=True, new_cutoffs=self._run_cutoffs)
+                                            pp_dir_clean=True, new_cutoffs=self._run_cutoffs,
+                                            new_input_dft=(self.pseudo_choice or {}).get("xc"))
 
             # Record this step's FINAL inputs (post-patch, post-user-edit) so later
             # steps can see them. Truncating to the entry-time mark first keeps a

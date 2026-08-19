@@ -36,6 +36,8 @@ class CreateJobBody(BaseModel):
     script_only: Optional[bool] = None
     mode: Optional[str] = None   # "auto" (default) | "assistant" (human-in-the-loop)
     plots: Optional[bool] = None   # experimental: render plots + extracted values
+    # {"xc": "PBE"|"PBEsol"|"LDA", "relativistic": "SR"|"FR", "accuracy": "standard"|"stringent"}
+    pseudo_choice: Optional[dict] = None
 
 
 class StepActionBody(BaseModel):
@@ -48,6 +50,26 @@ class PlanActionBody(BaseModel):
     action: str                          # approve | suggest | cancel
     steps: Optional[list] = None         # [{problem, tool, input}] — user-edited plan
     suggestion: Optional[str] = None     # natural-language revision request
+
+
+def _clean_pseudo_choice(raw):
+    """Validate the UI's library choice before storing it.
+
+    Rejecting here rather than at run time means a bad value can never silently
+    become "whatever the default was" three minutes into a job.
+    """
+    if not isinstance(raw, dict):
+        return None
+    from config import XC_CHOICES, REL_CHOICES, ACCURACY_CHOICES, UNAVAILABLE
+    xc = str(raw.get("xc", "")).strip()
+    rel = str(raw.get("relativistic", "")).strip().upper()
+    acc = str(raw.get("accuracy", "")).strip().lower()
+    xc = {c.lower(): c for c in XC_CHOICES}.get(xc.lower(), xc)
+    if xc not in XC_CHOICES or rel not in REL_CHOICES or acc not in ACCURACY_CHOICES:
+        return None
+    if (xc, rel) in UNAVAILABLE:
+        return None
+    return {"xc": xc, "relativistic": rel, "accuracy": acc}
 
 
 def _valid_uuid(s: str) -> bool:
@@ -141,6 +163,7 @@ async def create_job(
         script_only=script_only,
         mode=mode,
         plots=bool(body.plots),
+        pseudo_choice=_clean_pseudo_choice(body.pseudo_choice),
     )
     db.add(job)
     db.commit()
@@ -155,6 +178,7 @@ async def create_job(
         "script_only": script_only,
         "mode": mode,
         "plots": bool(body.plots),
+        "pseudo_choice": job.pseudo_choice,
     }
 
 
@@ -188,6 +212,7 @@ async def get_job(
         "script_only": bool(job.script_only),
         "mode": job.mode or "auto",
         "plots": bool(job.plots),
+        "pseudo_choice": job.pseudo_choice,
         # The step + generated scripts awaiting the user's review (assistant mode).
         "pending_step": job.pending_step if job.status == "awaiting_approval" else None,
         # The plan awaiting review (assistant mode), and the plan itself (both modes).
