@@ -91,6 +91,27 @@
 #       the same 8×8×8 mesh, and a metastable Si is a poor match for the
 #       occupations='fixed' a gap workflow asks for.
 #
+#  FIX  ⚠️ "Something went wrong" with no detail, under two concurrent users.
+#       The chain, end to end:
+#         one user triggers a blocking handler (a PVC listing, a zip)
+#         -> the event loop is held (see the next item)
+#         -> /healthz is served by that same loop and cannot answer within the
+#            probe's default timeoutSeconds=1
+#         -> three failures and kubelet KILLS the API pod
+#         -> every in-flight request on it is reset, fetch rejects, the frontend
+#            gets code "unknown" and shows the generic message.
+#       The event-loop fix below removes the cause. The liveness probe is also
+#       slackened (timeoutSeconds 5, failureThreshold 6) because restarting a
+#       merely-busy pod is worse than waiting for it. And the frontend no longer
+#       throws away the underlying text — "unknown" is a registered i18n key, so
+#       tr() was replacing "Failed to fetch" with "Something went wrong".
+#
+#  FIX  ⚠️ WORKSHOP-CRITICAL: the per-IP rate limit was 20/minute for the whole
+#       ROOM. slowapi keys on the client IP, and everyone on one wifi shares one
+#       NAT address — so twenty requests a minute was the budget for all
+#       attendees combined, not per person. Now 180/minute; 5000/day. Credits
+#       remain the real spend limiter, which is what that comment always said.
+#
 #  PERF ⚠️ Every API endpoint was blocking the event loop.
 #       All 23 handlers across jobs.py, admin.py and auth.py were declared
 #       `async def` while doing entirely blocking work — synchronous SQLAlchemy
@@ -194,6 +215,14 @@ kubectl -n datahub-llm get pods -l app=tritondft-worker \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
 # ---- 5. Smoke test ----------------------------------------------------------
+#   a0) CONCURRENCY — the one that has been failing in front of people. Have two
+#      browsers (or two people) start runs at the same time and keep both open.
+#      Neither may show "Something went wrong", and the API pods must not
+#      restart:
+#         kubectl -n datahub-llm get pods -l app=tritondft -w
+#      A RESTARTS count that climbs is the liveness probe killing a busy pod —
+#      if that still happens after this release, tell me.
+#
 #   a) Run bulk Si band gap. The log must NOT contain
 #        NEW_STEP_RESTART_MODE_INVALID
 #      anywhere. Confirm the repair actually ran instead of the model simply

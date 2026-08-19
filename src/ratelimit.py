@@ -17,4 +17,7 @@ limiter = Limiter(key_func=get_real_ip, default_limits=[])
 
 # Enqueue is cheap; credits are the real spend limiter. Keep this lenient —
 # just enough to stop someone hammering the endpoint.
-PER_IP_RATE = "20/minute;200/day"
+# Keyed on the client IP, which at a workshop is ONE NAT address for the whole
+# room — 20/minute was a budget for every attendee combined, not per person.
+# Credits remain the real spend limiter; this only exists to blunt a script.
+PER_IP_RATE = "180/minute;5000/day"
