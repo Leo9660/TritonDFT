@@ -209,7 +209,8 @@ bandsx_requirement_template = """
     - prefix and outdir MUST match the source pw.x run exactly.
 
     [Output]
-    - Always set filband='<prefix>.band' (or a fixed name 'bands.dat').
+    - Always set filband='<prefix>.band'. Do not choose another name: bands.x
+      writes <filband>.gnu and the plotting layer looks for that form.
     - If lsym is supported: set lsym=.false. (do not apply symmetry operations to a k-path).
 """
 
@@ -230,7 +231,8 @@ dosx_requirement_template = """
     - prefix and outdir MUST match the source pw.x run exactly.
 
     [Output]
-    - Always set fildos='<prefix>.dos' (or a fixed name 'dos.dat').
+    - Always set fildos='<prefix>.dos'. Do not choose another name: the plotting
+      layer looks for that form.
     - Emin, Emax, and DeltaE are in eV. Unless the user explicitly requests a
       narrower energy interval, use a conservative full-DOS window of
       Emin=-15.0 eV, Emax=10.0 eV, and DeltaE=0.01 eV. Never convert these
