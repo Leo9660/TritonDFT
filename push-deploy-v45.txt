@@ -7,7 +7,8 @@
 # NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
 # The postgres role is `tritondft`, NOT `postgres`.
 #
-# WHAT'S IN v45 — all four are log noise you have been staring at
+# WHAT'S IN v45 — one scientific-correctness fix, one resource change, and
+# a pile of things that made correct runs look broken
 # -----------------------------------------------------------------------------
 #  FIX  restart_mode is repaired, not rejected. (98cc518)
 #       NEW_STEP_RESTART_MODE_INVALID fired on nearly every nscf/bands step,
@@ -245,9 +246,18 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 # =============================================================================
 # Rollback
 #   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v44
-#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v43
+#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v44
 #
-# Risk: low. No migration, no dependency change, no API contract change. Three
-# of the four changes only make the agent stop doing something it should never
-# have done; the fourth is a prompt paragraph.
+#   Rolling the IMAGE back does NOT undo the resource change — that lives in
+#   k8s/worker.yaml, so revert the file and re-apply it if that is the problem.
+#
+# Risk: moderate, and higher than the last few releases — not from the code but
+# from the reservation. No migration, no dependency change, no API contract
+# change. The failure mode to watch for is workers going Pending because 64
+# reserved cores cannot be placed; everything else here only stops the agent
+# doing something it should never have done.
+#
+# The scientific consequence is the part that matters: every silicon number this
+# service has produced belongs to a metastable polymorph. Re-run anything from
+# before v45 that is going into the workshop.
 # =============================================================================
