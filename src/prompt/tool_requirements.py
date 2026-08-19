@@ -67,6 +67,23 @@ pw_requirement_template = """
     - Ensure nat equals the number of position lines.
     - Ensure ntyp equals the number of unique species labels. ATOMIC_SPECIES must contain exactly those species, one line per species.
 
+    [Coordinate precision — this decides how fast the run is]
+    - Copy the given coordinates EXACTLY. Write at least 10 decimal places, in
+      both ATOMIC_POSITIONS and CELL_PARAMETERS.
+    - Never round to 4 decimals. Writing 0.6667 where the value is 2/3 is an
+      error of 3.3e-5, which exceeds Quantum ESPRESSO's symmetry tolerance
+      (accep = 1e-5). QE then fails to recognise the space group: measured on
+      hexagonal MoS2, this cut the detected symmetry operations from 24 to 8,
+      inflated the irreducible k-points from ~40 to 129, and made the relaxation
+      roughly three times slower for an identical calculation.
+    - Coordinates that are exact fractions must be written out: 1/3 ->
+      0.3333333333, 2/3 -> 0.6666666667, 1/6 -> 0.1666666667.
+    - Padding a rounded value with zeros does NOT satisfy this. 0.6667000000 has
+      ten decimals but is still the 3.3e-5 error above; the digits must be the
+      real ones (0.6666666667), not a short value stretched to length.
+    - This costs nothing and is never a scientific choice: the numbers are given
+      to you, so transcribe them at full precision.
+
     [Pseudopotentials]
     - You must set pseudo_dir according to the following rules, or your run will be completely invalid:
     - {pseudo_dir_instructions}
