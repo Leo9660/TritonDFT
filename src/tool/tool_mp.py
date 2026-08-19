@@ -292,6 +292,13 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
             sg_txt,
             summary.get("crystal_system", "?"),
         ]
+        # Show the hull energy on the card. The selection rule is "lowest
+        # energy_above_hull for this formula", and when it silently picked a
+        # metastable polymorph there was nothing on screen to contradict it —
+        # a card reading "ehull 0.082 eV/atom" would have been obvious.
+        e = summary.get("energy_above_hull")
+        if isinstance(e, (int, float)):
+            bits.append("ground state" if e <= 1e-6 else f"ehull {e:.3f} eV/atom")
         print(f"[MP] {' · '.join(bits)}")
         if "a" in summary:
             print(f"[MP] a={summary['a']} b={summary['b']} c={summary['c']} Å · "
