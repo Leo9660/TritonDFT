@@ -96,6 +96,15 @@ pw_requirement_template = """
       and bands.x reads the bands run's wavefunctions from the same place. Do NOT
       invent a per-step prefix such as 'system_0' / 'system_1'.
     - Always set in &control: outdir='./' and wfcdir='./'.
+    - Reusing a previous step's results is NOT what restart_mode controls. An
+      nscf or bands step reads the SCF charge density purely by virtue of
+      calculation='nscf'/'bands' plus the shared prefix and outdir above;
+      restart_mode governs something else entirely — resuming THIS calculation
+      after it was interrupted, from checkpoints it wrote itself. A step being
+      generated now has no such checkpoints, so always write
+      restart_mode='from_scratch'. Writing 'restart' makes QE hunt for
+      wavefunction and XML files that either do not exist or belong to the SCF
+      step, and the result is sometimes a crash and sometimes wrong numbers.
 
     [Convergence thresholds]
     - Put conv_thr ONLY in &electrons.
