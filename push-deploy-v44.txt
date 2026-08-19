@@ -1,13 +1,13 @@
 # =============================================================================
-# TritonDFT — build / push image v43 + deploy to NRP
+# TritonDFT — build / push image v44 + deploy to NRP
 #
 # Run on the HOST machine (needs docker + kubectl). Run line by line.
-# v43 because image tags are IMMUTABLE — v42 is live, never reuse a tag.
+# v44 because image tags are IMMUTABLE — v43 is live, never reuse a tag.
 #
 # NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
 # The postgres role is `tritondft`, NOT `postgres`.
 #
-# WHAT'S IN v43 — all four are log noise you have been staring at
+# WHAT'S IN v44 — all four are log noise you have been staring at
 # -----------------------------------------------------------------------------
 #  FIX  restart_mode is repaired, not rejected. (98cc518)
 #       NEW_STEP_RESTART_MODE_INVALID fired on nearly every nscf/bands step,
@@ -55,6 +55,16 @@
 #       reads the field today, which is why it never surfaced; the planned
 #       "start from the MP relaxed structure" option reads exactly this.
 #
+#  FIX  The final answer contradicted the result card beside it. (e9c73f2)
+#       One MoS2 run showed a "Band gap 1.218 eV" card and, on the same screen,
+#       a conclusion saying the gap "was not extracted... so I cannot state the
+#       band gap" — and reported a total DOS "written to system_1.dos.dat" when
+#       dos.x had written nothing. _final_answer() saw only the per-step prose:
+#       the numbers come from extract_result(), which the worker runs AFTER the
+#       agent returns, and nothing told it which plottable files exist. It now
+#       reads the run directory itself first, and the prompt names that section
+#       the authority on outcomes.
+#
 #  Frontend since v42 is already live on Pages (plan list now renders, per-step
 #  input/output tabs, conversation opens at its end, no failure styling on a
 #  step that is still running). Not in this image.
@@ -69,12 +79,12 @@ kubectl -n datahub-llm get pods
 # ---- 1. Pull ----------------------------------------------------------------
 cd ~/workspace/TritonDFT
 git pull
-grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v43
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v44
 
 # ---- 2. Build & push --------------------------------------------------------
 docker login
-docker build -t yil384/tritondft:v43 .
-docker push yil384/tritondft:v43
+docker build -t yil384/tritondft:v44 .
+docker push yil384/tritondft:v44
 
 #   NOTE: .dockerignore now excludes env_setup.sh, *.token, tok.json,
 #   k8stoken.txt and *.sql. Those were being baked into every previous image via
@@ -133,8 +143,8 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 
 # =============================================================================
 # Rollback
-#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v42
-#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v42
+#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v43
+#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v43
 #
 # Risk: low. No migration, no dependency change, no API contract change. Three
 # of the four changes only make the agent stop doing something it should never
