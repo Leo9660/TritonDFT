@@ -33,7 +33,7 @@ spec:
                 values: ["true"]
       containers:
       - name: tritondft
-        image: docker.io/yil384/tritondft:v46
+        image: docker.io/yil384/tritondft:v47
         imagePullPolicy: Always
         command: ["/usr/bin/tini", "--", "uvicorn"]
         args:

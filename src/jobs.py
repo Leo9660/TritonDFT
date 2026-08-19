@@ -102,6 +102,31 @@ def _extract_user_message(messages) -> str:
     return ""
 
 
+# Enough of the conversation for the router to tell a follow-up from a new
+# request, and for it to answer one. Bounded because a run's log is large and
+# most of it is transcription the router cannot use.
+_CONTEXT_TURNS = 6
+_CONTEXT_CHARS = 12000
+
+
+def _conversation_context(messages) -> str:
+    """The turns before the current one, newest last, trimmed to a budget."""
+    if not isinstance(messages, list) or len(messages) < 2:
+        return ""
+    prior = [m for m in messages[:-1] if isinstance(m, dict) and m.get("content")]
+    out = []
+    for m in prior[-_CONTEXT_TURNS:]:
+        role = "User" if m.get("role") == "user" else "Assistant"
+        body = str(m.get("content", "")).strip()
+        # Keep the END of an assistant turn: the analysis and result numbers are
+        # written last, and the head is the step-by-step log.
+        if len(body) > 4000:
+            body = "…" + body[-4000:]
+        out.append(f"{role}: {body}")
+    text = "\n\n".join(out)
+    return text[-_CONTEXT_CHARS:]
+
+
 def _queue_position(db: Session, job: Job) -> int:
     """0 = next to run."""
     return (
@@ -174,6 +199,7 @@ def create_job(
         script_only=script_only,
         mode=mode,
         plots=bool(body.plots),
+        context=_conversation_context(messages),
         pseudo_choice=_clean_pseudo_choice(body.pseudo_choice),
     )
     db.add(job)

@@ -74,8 +74,8 @@ def log(msg: str):
 
 def claim_job():
     """Atomically claim one queued job.
-    Returns (id, user_id, usage_log_id, query, model, script_only, mode, pseudo_choice)
-    or None."""
+    Returns (id, user_id, usage_log_id, query, model, script_only, mode,
+    pseudo_choice, context) or None."""
     db = SessionLocal()
     try:
         row = db.execute(text("""
@@ -93,7 +93,8 @@ def claim_job():
             return None
         job = db.query(Job).filter(Job.id == row[0]).first()
         return (job.id, job.user_id, job.usage_log_id, job.query,
-                job.model, bool(job.script_only), job.mode or "auto", job.pseudo_choice)
+                job.model, bool(job.script_only), job.mode or "auto",
+                job.pseudo_choice, job.context or "")
     finally:
         db.close()
 
@@ -332,6 +333,38 @@ def _apply_openai_override(agent):
         log(f"openai key applied: \u2026{key[-4:]}")
     except Exception as e:
         log(f"openai key override failed: {e}")
+
+
+def triage(agent, query: str, context: str):
+    """Decide whether this message needs a calculation at all.
+
+    Every message used to start a Materials Project lookup and a full workflow,
+    including "what was that band gap again?" — which re-ran a calculation to
+    answer a question already answered, and read to a chemist as the tool not
+    listening. Returns (intent, answer); ("calculate", "") means run the agent.
+
+    Fails OPEN: any error here returns "calculate", because refusing to run a
+    real request is worse than running a needless one.
+    """
+    from prompt.utils import get_prompt
+    from utils import extract_json_brutal
+    try:
+        messages = get_prompt(prompt_type="intent",
+                              query=query, context=context or "(nothing yet)")
+        out = agent.generator(messages[0]["content"],
+                              max_new_tokens=1200, return_full_text=False)
+        parsed = extract_json_brutal(out[0].get("generated_text", "")) or {}
+        intent = str(parsed.get("intent", "")).strip().lower()
+        if intent not in ("calculate", "followup", "chat", "offtopic"):
+            return "calculate", ""
+        answer = str(parsed.get("answer", "")).strip()
+        log(f"triage: {intent} — {str(parsed.get('reason',''))[:120]}")
+        if intent == "calculate" or not answer:
+            return "calculate", ""
+        return intent, answer
+    except Exception as e:
+        log(f"triage failed, treating as a calculation: {e}")
+        return "calculate", ""
 
 
 def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only=False, mode="auto", pseudo_choice=None):
@@ -641,9 +674,29 @@ def main():
             time.sleep(POLL_INTERVAL_S)
             continue
 
-        job_id, user_id, usage_log_id, query, model, script_only, mode, pseudo_choice = claimed
+        (job_id, user_id, usage_log_id, query, model, script_only, mode,
+         pseudo_choice, context) = claimed
         log(f"claimed job {job_id}")
         try:
+            if model:
+                agent.model = model
+                try:
+                    agent.generator.model = model
+                except Exception:
+                    pass
+            _apply_openai_override(agent)
+            try:
+                agent.generator.reset_token_counters()
+            except Exception:
+                pass
+            intent, answer = triage(agent, query, context)
+            if intent != "calculate":
+                # Answered without touching Materials Project or Quantum ESPRESSO.
+                finalize(job_id, user_id, usage_log_id, "done", answer, None,
+                         output_tokens=getattr(agent.generator, "total_output_tokens", None),
+                         prompt_tokens=getattr(agent.generator, "total_prompt_tokens", None),
+                         model=model)
+                continue
             run_job(agent, job_id, user_id, usage_log_id, query, model, script_only, mode, pseudo_choice)
         except Exception as e:
             log(f"run_job crashed for {job_id}: {e}")

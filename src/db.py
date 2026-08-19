@@ -113,6 +113,10 @@ class Job(Base):
     # The user's decision for the pending plan; the worker's plan gate consumes it.
     plan_action = Column(JSON)
     query = Column(Text, nullable=False)
+    # A trimmed transcript of the conversation this request arrived in. The
+    # worker only ever received the single user message, which made "what was
+    # that band gap again?" indistinguishable from a request to compute one.
+    context = Column(Text)
     output = Column(Text, default="", nullable=False)
     error = Column(Text)
     usage_log_id = Column(UUID(as_uuid=True))   # links to UsageLog for credit reconcile
@@ -168,6 +172,7 @@ def _run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pseudo_choice JSON",
         "ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS model TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS can_use_cpu BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS context TEXT",
     ]
     with engine.begin() as conn:
         for stmt in migrations:
