@@ -31,6 +31,15 @@
 #       now includes can_use_cpu. (The separate in-flight job cap deliberately
 #       does not: that flag says what you may run, not how many at once.)
 #
+#  FIX  A run that produced nothing rendered as a silent success.
+#       "How many steps did the vc-relax take?" is not a calculation, so the
+#       agent found no material, returned early, and the UI showed
+#       "Complete · 0 steps" over a blank card — which tells the user nothing
+#       and reads as being ignored. finalize() now refuses to store an empty
+#       output on a "done" job and writes what happened instead. Triage below
+#       stops most of these from being run at all, but the guard is independent
+#       of it: an empty result is never a success.
+#
 #  FEAT ⚠️ A message is triaged BEFORE anything runs.
 #       Every message used to start a Materials Project lookup and a full DFT
 #       workflow — including "what was that band gap again?", which re-ran a
@@ -62,7 +71,10 @@
 #         {"action":"read","files":[{"job":"...","name":"02_scf.in"}]}
 #         {"action":"answer","answer":"..."}
 #       Bounded at 2 rounds, 4 files and 60 kB, because a vc-relax .out is
-#       routinely over 150 kB. Filenames go through is_safe_filename and the
+#       routinely over 150 kB. A file over budget is clipped from BOTH ends: a
+#       QE output puts the parameters at the top and the answer at the bottom —
+#       final energy, relaxed cell, BFGS step count, timings — so keeping only
+#       the first 60 kB would keep the header and discard what was asked about. Filenames go through is_safe_filename and the
 #       job must appear in a manifest already filtered by user_id, so a
 #       requested "../../etc/passwd" is dropped. If the loop produces nothing
 #       it falls back to the one-shot answer, and then to running a real

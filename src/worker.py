@@ -279,6 +279,22 @@ def finalize(job_id, user_id, usage_log_id, status, output, error,
             job.status = status
         # Caller already capped to OUTPUT_CAP (+ truncation notice); don't
         # re-slice here or the notice gets clipped off.
+        #
+        # A run that ends with nothing to show is not a success, whatever its
+        # status says. It happened for messages that were never calculations —
+        # "how many steps did the vc-relax take?" found no material, returned
+        # early, and the UI rendered "Complete · 0 steps" and a blank card, which
+        # tells the user nothing and looks like the service ignored them. Say
+        # what happened instead.
+        if status == "done" and not (output or "").strip():
+            output = (
+                "> The run finished without producing any output.\n>\n"
+                "> This usually means the message was not a calculation the agent "
+                "could act on — it looks for a material to compute a property of. "
+                "If you were asking about a run that already happened, ask again in "
+                "the same conversation and it will be answered from that run; if you "
+                "meant to start a new calculation, name the material and the property."
+            )
         job.output = output
         job.error = error
         if run_dir:
@@ -375,6 +391,23 @@ FOLLOWUP_MAX_FILES = 4
 FOLLOWUP_MAX_CHARS = 60000
 
 
+def _clip(text: str, budget: int) -> str:
+    """Trim a file to the budget from BOTH ends.
+
+    A Quantum ESPRESSO output puts the parameters at the top and the answer at
+    the bottom — final energy, the relaxed cell, how many BFGS steps it took,
+    the timings. Taking the first N characters of a 145 kB vc-relax output keeps
+    the header and throws away everything the question was about.
+    """
+    if budget <= 0 or len(text) <= budget:
+        return text[:budget] if budget > 0 else ""
+    head = budget * 2 // 5
+    tail = budget - head
+    return (text[:head]
+            + f"\n\n… [{len(text) - budget} characters omitted from the middle] …\n\n"
+            + text[-tail:])
+
+
 def _followup_manifest(db, user_id, conversation_id, current_job_id):
     """What has actually been run in this chat: each job, what it concluded, and
     what it left on disk. This is the index the follow-up agent browses instead
@@ -445,7 +478,7 @@ def answer_followup(agent, query, context, db, user_id, conversation_id, job_id)
             if not f.is_file() or f.is_symlink():
                 continue
             try:
-                body = f.read_text(errors="ignore")[:budget]
+                body = _clip(f.read_text(errors="ignore"), budget)
             except OSError:
                 continue
             budget -= len(body)
