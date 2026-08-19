@@ -1,13 +1,13 @@
 # =============================================================================
-# TritonDFT — build / push image v44 + deploy to NRP
+# TritonDFT — build / push image v45 + deploy to NRP
 #
 # Run on the HOST machine (needs docker + kubectl). Run line by line.
-# v44 because image tags are IMMUTABLE — v43 is live, never reuse a tag.
+# v45 because image tags are IMMUTABLE — v44 is live, never reuse a tag.
 #
 # NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
 # The postgres role is `tritondft`, NOT `postgres`.
 #
-# WHAT'S IN v44 — all four are log noise you have been staring at
+# WHAT'S IN v45 — all four are log noise you have been staring at
 # -----------------------------------------------------------------------------
 #  FIX  restart_mode is repaired, not rejected. (98cc518)
 #       NEW_STEP_RESTART_MODE_INVALID fired on nearly every nscf/bands step,
@@ -65,6 +65,26 @@
 #       reads the run directory itself first, and the prompt names that section
 #       the authority on outcomes.
 #
+#  FIX  ⚠️ THE WRONG SILICON. Every "Si" run was computing a metastable
+#       polymorph, not diamond silicon.
+#
+#       tool_mp truncated the candidate list to `limit` (25) and THEN picked the
+#       lowest energy_above_hull. MP returns "Si" as 43 entries in no particular
+#       order, so 18 were dropped before the minimum was taken — and the ground
+#       state (mp-aaaaaaft, Fd-3m, 2 atoms, ehull=0) was among the dropped ones.
+#       What survived and won was C2/m (#12), 8 atoms, 0.082 eV/atom above the
+#       hull. Verified against the live API: the fix now returns mp-aaaaaaft.
+#
+#       energy_above_hull is now fetched with the search and the candidates are
+#       sorted by it BEFORE truncation. This also removes one API round trip per
+#       candidate — the old code re-queried each id for a number the search had
+#       already returned.
+#
+#       This also explains the slow, aborting Si runs: an 8-atom triclinic cell
+#       (γ=148.9°) has far more irreducible k-points than 2-atom diamond Si at
+#       the same 8×8×8 mesh, and a metastable Si is a poor match for the
+#       occupations='fixed' a gap workflow asks for.
+#
 #  FIX  A band-gap workflow silently produced a meaningless DOS. (f6fe81d)
 #       Three faults in a row, the first ours by construction:
 #         1. A gap needs occupations='fixed' on the nscf. A 'fixed' run stores
@@ -95,12 +115,12 @@ kubectl -n datahub-llm get pods
 # ---- 1. Pull ----------------------------------------------------------------
 cd ~/workspace/TritonDFT
 git pull
-grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v44
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v45
 
 # ---- 2. Build & push --------------------------------------------------------
 docker login
-docker build -t yil384/tritondft:v44 .
-docker push yil384/tritondft:v44
+docker build -t yil384/tritondft:v45 .
+docker push yil384/tritondft:v45
 
 #   NOTE: .dockerignore now excludes env_setup.sh, *.token, tok.json,
 #   k8stoken.txt and *.sql. Those were being baked into every previous image via
@@ -148,7 +168,17 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      executed, so "bands+dos" on it never meant dos.x ran. The plan chain is
 #      the thing that shows that.
 #
-#   d) DOS, the one that has been failing. Run MoS2 asking for band gap AND
+#   d) ⚠️ SILICON — verify this first. Run any Si query and check the material
+#      card says:
+#          mp-aaaaaaft · Si · Fd-3m (#227) · cubic
+#      If it names any other space group, the wrong polymorph is still being
+#      picked. Then open 01_vc-relax.in: nat MUST be 2 (primitive diamond), not
+#      8, and CELL_PARAMETERS must be a regular rhombohedral cell — not the
+#      γ=148.9° monster.
+#
+#      Every Si result produced before this release is suspect. Re-run them.
+#
+#   e) DOS, the one that has been failing. Run MoS2 asking for band gap AND
 #      total DOS. Then, in the step list, open 06_dos.in and confirm it now has
 #        ngauss=0
 #        degauss=0.01
@@ -160,7 +190,7 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      (it was always there, just filtered out) but still no plot: the numbers
 #      in it are degenerate. That run has to be repeated to get a real DOS.
 #
-#   e) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
+#   f) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
 #      It must fail ONCE, quickly, with RAMAN_REQUIRES_LDA — not grind through
 #      retries. Then switch the functional dropdown to LDA and re-run; that path
 #      should proceed.
@@ -171,7 +201,7 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 
 # =============================================================================
 # Rollback
-#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v43
+#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v44
 #   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v43
 #
 # Risk: low. No migration, no dependency change, no API contract change. Three

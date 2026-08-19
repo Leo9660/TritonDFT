@@ -129,28 +129,41 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
                 print(f"[MP] could not map spacegroup {sg_symbol!r} to a number; querying without it")
             sg_symbol = None
 
-    # Step 3. Query summary endpoint to get material_ids (avoid `limit=`; truncate locally).
-    if not material_ids:
-        with MPRester(use_document_model=False) as mpr:
+    # Step 3. Query summary for material_ids, energies and structures at once.
+    #
+    # energy_above_hull is fetched HERE, with the search, and the candidates are
+    # sorted by it BEFORE the local truncation. Truncating first and minimising
+    # afterwards silently returned a metastable polymorph: "Si" matches 43
+    # entries in no particular order, limit=25 dropped 18 of them, and the
+    # ground state (Fd-3m, ehull=0) was among the dropped — so the run relaxed
+    # a C2/m polymorph 0.082 eV/atom above the hull and reported it as silicon.
+    ehull_lookup = {}
+    with MPRester(use_document_model=False) as mpr:
+        if not material_ids:
             docs_iter = mpr.materials.summary.search(
                 formula=formula,
                 elements=elements,
                 spacegroup_symbol=sg_symbol,
                 spacegroup_number=sg_number,
                 chemsys=chemsys,
-                fields=["material_id", "structure"],
+                fields=["material_id", "structure", "energy_above_hull"],
             )
-            docs = list(docs_iter)[:limit]
-        material_ids = [d["material_id"] for d in docs]
-        relaxed_lookup = {d["material_id"]: _as_structure(d["structure"]) for d in docs}
-    else:
-        with MPRester(use_document_model=False) as mpr:
+        else:
             docs_iter = mpr.materials.summary.search(
                 material_ids=material_ids,
-                fields=["material_id", "structure"],
+                fields=["material_id", "structure", "energy_above_hull"],
             )
-            docs = list(docs_iter)
-        relaxed_lookup = {d["material_id"]: _as_structure(d["structure"]) for d in docs}
+        docs = list(docs_iter)
+
+    def _ehull(d):
+        v = d.get("energy_above_hull")
+        return v if isinstance(v, (int, float)) else float("inf")
+
+    docs.sort(key=_ehull)
+    docs = docs[:limit]
+    material_ids = [d["material_id"] for d in docs]
+    relaxed_lookup = {d["material_id"]: _as_structure(d["structure"]) for d in docs}
+    ehull_lookup = {d["material_id"]: _ehull(d) for d in docs}
 
     if not material_ids:
         return {}
@@ -189,21 +202,14 @@ def fetch_material_info_from_api_snippet(snippet: str, limit: int = 25, verbose:
         if mdoc and mdoc.get("initial_structures"):
             init_list[mid] = [_as_structure(e).to(fmt="cif") for e in mdoc["initial_structures"]]
 
-        with MPRester(use_document_model=False) as mpr:
-            docs_iter = mpr.materials.summary.search(
-                material_ids=[mid],
-                fields=[
-                    "energy_above_hull",
-                ],
-            )
-            docs = list(docs_iter)
-
-            for i, doc in enumerate(docs):
-                if doc["energy_above_hull"] < ehull_min:
-                    ehull_min = doc["energy_above_hull"]
-                    min_id = mid
-                    min_subid = i
-                    # print(f"New min ehull: {ehull_min} for {min_id} (subid {min_subid})")
+        # Energies already came back with the search above — this used to fire
+        # one API request per candidate, up to `limit` round trips for a
+        # question that was already answered.
+        e = ehull_lookup.get(mid, float("inf"))
+        if e < ehull_min:
+            ehull_min = e
+            min_id = mid
+            min_subid = 0
 
     retrieved_structure = relaxed_lookup.get(min_id)
     # 使用 SpacegroupAnalyzer 进行标准化处理
