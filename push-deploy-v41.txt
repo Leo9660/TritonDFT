@@ -1,0 +1,106 @@
+# =============================================================================
+# TritonDFT — build / push image v41 + deploy to NRP
+#
+# Run on the HOST machine (needs docker + kubectl). Run line by line.
+# v41 because image tags are IMMUTABLE — v40 is live, never reuse a tag.
+#
+# NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
+#
+# WHAT'S IN v41 — the run finally answers the question it was asked
+# -----------------------------------------------------------------------------
+#  FEAT  A synthesis step at the end of DFTAgent.run().
+#
+#        Until now the Analysis section was "\n\n".join(conclusions) — the
+#        per-subproblem verdicts concatenated. Every judgement in the pipeline
+#        looks at exactly ONE subproblem and never sees the original question,
+#        so a finished run reported what each step concluded and never said
+#        what the ANSWER was. No component was responsible for that.
+#
+#        _final_answer() takes the question, the plan and the ordered step
+#        conclusions and writes the answer. It leads with the result and its
+#        units, then how it was obtained (functional, pseudopotential library,
+#        cutoff, k-mesh), then the caveat a scientist would insist on. It may
+#        use only numbers that appear in the step conclusions, and must say so
+#        when the run did not produce what was asked for.
+#
+#        The answer REPLACES the step verdicts in the conclusion — the per-step
+#        detail is already in the log and in each step's card, and repeating it
+#        buried the answer under the working. Falls back to the old
+#        concatenation only if the call fails.
+#
+#        Cost: one extra LLM call per job, small output. The timeout path is
+#        unchanged — a partial run is not narrated as a finished study.
+#
+#  Also in this image (frontend-adjacent backend, no schema change):
+#    - nothing else. v40's plots-toggle fix is already live.
+#
+#  Frontend changes since v40 are on GitHub Pages already (band-plot gap
+#  removal, asides, stop-spinner fix, validation-retry fix). Not in this image.
+#
+#  NEW PROMPT FILE: src/prompt/final_answer.py — it is COPY'd into the image
+#  like the rest of src/, so nothing extra to do, but if you build from a dirty
+#  tree make sure it is present.
+# =============================================================================
+
+# ---- 0. Re-auth to NRP (tokens last ~21 min) --------------------------------
+#   https://portal.nrp-nautilus.io/  ->  Get Config  ->  overwrite ~/.kube/config
+kubectl -n datahub-llm get pods
+
+# ---- 1. Pull ----------------------------------------------------------------
+cd ~/workspace/TritonDFT
+git pull
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v41
+ls src/prompt/final_answer.py                          # must exist
+
+# ---- 2. Build & push --------------------------------------------------------
+docker login
+docker build -t yil384/tritondft:v41 .
+docker push yil384/tritondft:v41
+
+#   No dependency or Dockerfile changes — the pip layer is cached. No --no-cache.
+
+# ---- 3. Deploy --------------------------------------------------------------
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/worker.yaml
+
+kubectl -n datahub-llm rollout status deploy/tritondft --timeout=300s
+kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=900s
+
+#   "7 of 8 updated replicas are available…" repeating is NORMAL — maxUnavailable
+#   is 1 and a pod mid-calculation burns the full 60s grace period, so the worker
+#   rollout can take ~8 minutes. Only investigate on Pending / ImagePullBackOff /
+#   CrashLoopBackOff.
+
+# ---- 4. Verify --------------------------------------------------------------
+#   This change lands in the WORKER (the agent writes analysis.json), unlike v40
+#   which was the API. Check the worker digest:
+kubectl -n datahub-llm get pods -l app=tritondft-worker \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+
+# ---- 5. Smoke test ----------------------------------------------------------
+#   Run bulk Si band gap. On completion the Analysis · conclusion block must:
+#     - OPEN with the gap and its units, not with "we ran a vc-relax"
+#     - name the functional / pseudopotential / cutoff / k-mesh
+#     - carry the PBE-underestimates-gaps caveat
+#     - NOT be a list of "Step 1: …  Step 2: …" verdicts
+#
+#   If you still see "Step 1: … Step 2: …", the synthesis call failed and it
+#   fell back. Check the worker log for:
+#     kubectl -n datahub-llm logs -l app=tritondft-worker | grep "final answer synthesis failed"
+#
+#   Watch for the failure mode this prompt is written against: a number in the
+#   answer that appears nowhere in the run. If the gap it states does not match
+#   the gap card, the model substituted a remembered value — tell me, that is a
+#   prompt bug, not a deploy problem.
+
+# =============================================================================
+# Rollback
+#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v40
+#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v40
+#
+# Risk: low-moderate. No schema change, no migration. The new call is wrapped in
+# try/except and falls back to the previous behaviour, so the worst case is the
+# old conclusion plus one wasted LLM call. The real risk is editorial, not
+# operational: the answer is model-written prose that users will read as
+# authoritative. Read the first few before the workshop.
+# =============================================================================
