@@ -80,6 +80,11 @@
 #       candidate — the old code re-queried each id for a number the search had
 #       already returned.
 #
+#       The material card now also states the hull energy — "ground state", or
+#       "ehull 0.082 eV/atom" when it is not. The selection rule is invisible
+#       until it goes wrong, and when it did there was nothing on screen to
+#       contradict it.
+#
 #       This also explains the slow, aborting Si runs: an 8-atom triclinic cell
 #       (γ=148.9°) has far more irreducible k-points than 2-atom diamond Si at
 #       the same 8×8×8 mesh, and a metastable Si is a poor match for the
@@ -170,7 +175,7 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #
 #   d) ⚠️ SILICON — verify this first. Run any Si query and check the material
 #      card says:
-#          mp-aaaaaaft · Si · Fd-3m (#227) · cubic
+#          mp-aaaaaaft · Si · Fd-3m (#227) · cubic · ground state
 #      If it names any other space group, the wrong polymorph is still being
 #      picked. Then open 01_vc-relax.in: nat MUST be 2 (primitive diamond), not
 #      8, and CELL_PARAMETERS must be a regular rhombohedral cell — not the
