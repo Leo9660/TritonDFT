@@ -90,6 +90,12 @@
 #       the same 8×8×8 mesh, and a metastable Si is a poor match for the
 #       occupations='fixed' a gap workflow asks for.
 #
+#  FEAT New endpoint GET /jobs/{id}/steps/{n}/input, for the UI's input tab.
+#       The UI used to list the whole run directory and filter client-side —
+#       iterdir plus a stat per file over a PVC eight workers are writing to,
+#       slow enough that the tab appeared to hang. A glob for the step's own
+#       prefix touches almost nothing. Frontend already deployed.
+#
 #  FIX  A band-gap workflow silently produced a meaningless DOS. (f6fe81d)
 #       Three faults in a row, the first ours by construction:
 #         1. A gap needs occupations='fixed' on the nscf. A 'fixed' run stores
@@ -182,6 +188,19 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      γ=148.9° monster.
 #
 #      Every Si result produced before this release is suspect. Re-run them.
+#
+#      MEASURED, on real hardware, diamond Si (2 atoms, 29 irreducible k-points,
+#      ecutwfc=60, 8x8x8): scf is 3.7s on ONE rank, 0.9s on 8, 0.6s on 32 — and
+#      -nk changes nothing at this size (0.89s with and without). A full
+#      vc-relax is 1.8s on 8 ranks. So when a website vc-relax takes 60s, QE is
+#      not the bottleneck.
+#
+#      The metastable C2/m cell that was being picked does not merely run slow:
+#        Error in routine checkallsym (1):
+#        some of the original symmetry operations not satisfied
+#      It aborts. MP publishes those coordinates to 4 decimals and QE's symmetry
+#      tolerance is 1e-5, so the cell contradicts its own space group. That is
+#      the MPI_ABORT in the logs — nothing to do with rank count.
 #
 #   e) DOS, the one that has been failing. Run MoS2 asking for band gap AND
 #      total DOS. Then, in the step list, open 06_dos.in and confirm it now has
