@@ -40,6 +40,24 @@ app.add_middleware(
 )
 
 
+# Route handlers are declared `def`, so FastAPI runs them in anyio's threadpool
+# rather than on the event loop — see the note in jobs.py. That threadpool
+# defaults to 40 threads, but each in-flight request holds a SQLAlchemy session
+# for its whole duration and the engine gives out pool_size + max_overflow = 10
+# connections per process. Forty threads competing for ten connections turns a
+# burst into connection-pool timeouts, so the limits are matched here instead.
+_DB_CONCURRENCY = 10
+
+
+@app.on_event("startup")
+def _match_threadpool_to_db_pool():
+    try:
+        import anyio.to_thread
+        anyio.to_thread.current_default_thread_limiter().total_tokens = _DB_CONCURRENCY
+    except Exception as e:
+        print(f"[startup] could not size the threadpool: {e}")
+
+
 @app.on_event("startup")
 def _on_startup():
     _, err = init_db()

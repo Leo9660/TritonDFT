@@ -91,6 +91,22 @@
 #       the same 8×8×8 mesh, and a metastable Si is a poor match for the
 #       occupations='fixed' a gap workflow asks for.
 #
+#  PERF ⚠️ Every API endpoint was blocking the event loop.
+#       All 23 handlers across jobs.py, admin.py and auth.py were declared
+#       `async def` while doing entirely blocking work — synchronous SQLAlchemy
+#       queries, and for the artifact routes iterdir/stat/read over a shared
+#       PVC. FastAPI runs a `def` handler in its threadpool but an `async def`
+#       one directly on the event loop, so with uvicorn's single loop per pod
+#       ONE slow directory listing stalled every other request on that pod,
+#       including the /jobs/{id} polling the entire run view depends on. Not one
+#       of the 23 awaits anything, so nothing was gained by it.
+#
+#       They are `def` now. Effective concurrency per API pod goes from 1 to 10.
+#       The threadpool is pinned to 10 at startup to match pool_size +
+#       max_overflow: each in-flight request holds a session for its whole
+#       duration, and anyio's default of 40 threads against 10 connections would
+#       trade event-loop stalls for connection-pool timeouts.
+#
 #  FEAT New endpoint GET /jobs/{id}/steps/{n}/input, for the UI's input tab.
 #       The UI used to list the whole run directory and filter client-side —
 #       iterdir plus a stat per file over a PVC eight workers are writing to,
@@ -186,7 +202,11 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      A line there means the repair fired and the user never saw it. No line
 #      just means the model wrote it correctly — also fine.
 #
-#   b) Open a step's "input" tab in the UI and read the generated file. That is
+#   b) Open a step's "input" tab in the UI and read the generated file. It
+#      should now come back promptly, and — the real point — opening it must no
+#      longer stall the rest of the page. Open a step's input on one run while
+#      another run is streaming and confirm the streaming one keeps updating.
+#      Before this release it would visibly freeze. That is
 #      new in this frontend and it is the fastest way to see whether prefix,
 #      cutoff and k-mesh are what you expect.
 #

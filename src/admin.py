@@ -12,6 +12,14 @@ import errors
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# Declared `def`, not `async def`, deliberately. Every handler in this module
+# does blocking work — synchronous SQLAlchemy queries, and for the artifact
+# routes iterdir/stat/read over a shared PVC. FastAPI runs a `def` handler in
+# its threadpool and an `async def` one directly on the event loop, so as
+# `async def` a single slow directory listing stalled every other request on
+# that pod, including the /jobs/{id} polling the whole run view depends on.
+# None of them await anything, so there is nothing to gain from async here.
+
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_admin:
@@ -42,7 +50,7 @@ def _user_to_dict(u: User):
 
 
 @router.get("/users")
-async def list_users(
+def list_users(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_session),
 ):
@@ -51,7 +59,7 @@ async def list_users(
 
 
 @router.patch("/users/{email}")
-async def update_user(
+def update_user(
     email: str,
     body: UserUpdate,
     admin: User = Depends(require_admin),
@@ -91,7 +99,7 @@ async def update_user(
 
 
 @router.get("/users/{email}/usage")
-async def user_usage(
+def user_usage(
     email: str,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_session),
@@ -120,7 +128,7 @@ async def user_usage(
 
 
 @router.get("/audit")
-async def get_audit_log(
+def get_audit_log(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_session),
 ):
@@ -179,7 +187,7 @@ def get_openai_override(db: Session) -> Optional[str]:
 
 
 @router.get("/settings/openai-key")
-async def read_openai_key(
+def read_openai_key(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_session),
 ):
@@ -196,7 +204,7 @@ async def read_openai_key(
 
 
 @router.put("/settings/openai-key")
-async def set_openai_key(
+def set_openai_key(
     body: ApiKeyUpdate,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_session),
@@ -232,7 +240,7 @@ async def set_openai_key(
 
 
 @router.delete("/settings/openai-key")
-async def clear_openai_key(
+def clear_openai_key(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_session),
 ):

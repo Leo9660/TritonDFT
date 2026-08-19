@@ -15,6 +15,14 @@ import errors
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# Declared `def`, not `async def`, deliberately. Every handler in this module
+# does blocking work — synchronous SQLAlchemy queries, and for the artifact
+# routes iterdir/stat/read over a shared PVC. FastAPI runs a `def` handler in
+# its threadpool and an `async def` one directly on the event loop, so as
+# `async def` a single slow directory listing stalled every other request on
+# that pod, including the /jobs/{id} polling the whole run view depends on.
+# None of them await anything, so there is nothing to gain from async here.
+
 # request-link is unauthenticated and mints a DB row + sends an email per call —
 # rate-limit it per IP to stop account/email flooding.
 REQUEST_LINK_RATE = "5/minute;40/hour"
@@ -107,7 +115,7 @@ def get_current_user(
 
 @router.post("/request-link")
 @limiter.limit(REQUEST_LINK_RATE)
-async def request_link(request: Request, body: RequestLinkBody, db: Session = Depends(get_session)):
+def request_link(request: Request, body: RequestLinkBody, db: Session = Depends(get_session)):
     email = body.email.lower().strip()
     user = db.query(User).filter(User.email == email).first()
     if user is None:
@@ -146,7 +154,7 @@ async def request_link(request: Request, body: RequestLinkBody, db: Session = De
 
 
 @router.post("/verify")
-async def verify_magic_link(
+def verify_magic_link(
     body: VerifyBody,
     response: Response,
     db: Session = Depends(get_session),
@@ -198,13 +206,13 @@ async def verify_magic_link(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+def logout(response: Response):
     response.delete_cookie(COOKIE_NAME)
     return {"ok": True}
 
 
 @router.get("/me", response_model=MeResponse)
-async def me(user: User = Depends(get_current_user)):
+def me(user: User = Depends(get_current_user)):
     return MeResponse(
         email=user.email,
         credits=user.credits,
