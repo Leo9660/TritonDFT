@@ -40,6 +40,21 @@
 #       spacegroup symbol containing a slash, and querying by international
 #       number is the equivalent workaround — but that is a pod-log detail.
 #
+#  FIX  Plot files the prompt sanctioned but the parser could not find.
+#       (6a08a21) tool_requirements offered filband='<prefix>.band' "or a fixed
+#       name 'bands.dat'", and fildos='<prefix>.dos' "or 'dos.dat'" — while
+#       parse_bands globbed only *.band.gnu and parse_dos only *.dos. A model
+#       taking the second, equally sanctioned option produced bands.dat.gnu and
+#       dos.dat, and the plot silently vanished while the run reported success.
+#       Parsers now fall back, so runs ALREADY on disk with those names start
+#       plotting without being re-run; the prompt no longer offers the choice.
+#
+#  FIX  relaxed_structures paired the wrong material with the wrong index.
+#       (ffeef35) Used `mid` — whatever the selection loop ended on — instead of
+#       `min_id`, and indexed a single Structure as if it were a list. Nothing
+#       reads the field today, which is why it never surfaced; the planned
+#       "start from the MP relaxed structure" option reads exactly this.
+#
 #  Frontend since v42 is already live on Pages (plan list now renders, per-step
 #  input/output tabs, conversation opens at its end, no failure styling on a
 #  step that is still running). Not in this image.
@@ -98,7 +113,16 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      new in this frontend and it is the fastest way to see whether prefix,
 #      cutoff and k-mesh are what you expect.
 #
-#   c) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
+#   c) MoS2, the query that asked for bands AND total DOS. Open the plan chain
+#      in the run header and check dos.x is actually in it. If it is, the DOS
+#      plot should now appear — including on the run you already did, since the
+#      parse happens when you view it, not when it ran.
+#
+#      Note the "Task" card is derived from KEYWORDS IN THE QUERY, not from what
+#      executed, so "bands+dos" on it never meant dos.x ran. The plan chain is
+#      the thing that shows that.
+#
+#   d) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
 #      It must fail ONCE, quickly, with RAMAN_REQUIRES_LDA — not grind through
 #      retries. Then switch the functional dropdown to LDA and re-run; that path
 #      should proceed.
