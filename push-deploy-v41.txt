@@ -74,7 +74,7 @@ kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=900s
 # ---- 4. Verify --------------------------------------------------------------
 #   This change lands in the WORKER (the agent writes analysis.json), unlike v40
 #   which was the API. Check the worker digest:
-kubectl -n datahub-llm get pods -l app=tritondft-worker \
+kubectl -n datahub-llm get pods -l k8s-app=tritondft-worker \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
 # ---- 5. Smoke test ----------------------------------------------------------
@@ -86,7 +86,7 @@ kubectl -n datahub-llm get pods -l app=tritondft-worker \
 #
 #   If you still see "Step 1: … Step 2: …", the synthesis call failed and it
 #   fell back. Check the worker log for:
-#     kubectl -n datahub-llm logs -l app=tritondft-worker | grep "final answer synthesis failed"
+#     kubectl -n datahub-llm logs -l k8s-app=tritondft-worker | grep "final answer synthesis failed"
 #
 #   Watch for the failure mode this prompt is written against: a number in the
 #   answer that appears nowhere in the run. If the gap it states does not match

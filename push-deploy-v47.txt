@@ -332,7 +332,7 @@ kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=900s
 # ---- 4. Verify --------------------------------------------------------------
 #   Everything here lands in the WORKER (the agent generates and validates
 #   inputs), so check that digest:
-kubectl -n datahub-llm get pods -l app=tritondft-worker \
+kubectl -n datahub-llm get pods -l k8s-app=tritondft-worker \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
 # ---- 5. Smoke test ----------------------------------------------------------
@@ -361,7 +361,7 @@ kubectl -n datahub-llm get pods -l app=tritondft-worker \
 #      browsers (or two people) start runs at the same time and keep both open.
 #      Neither may show "Something went wrong", and the API pods must not
 #      restart:
-#         kubectl -n datahub-llm get pods -l app=tritondft -w
+#         kubectl -n datahub-llm get pods -l k8s-app=tritondft -w
 #      A RESTARTS count that climbs is the liveness probe killing a busy pod —
 #      if that still happens after this release, tell me.
 #
@@ -369,7 +369,7 @@ kubectl -n datahub-llm get pods -l app=tritondft-worker \
 #        NEW_STEP_RESTART_MODE_INVALID
 #      anywhere. Confirm the repair actually ran instead of the model simply
 #      getting it right this time:
-kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restart'"
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker | grep "restart_mode 'restart'"
 #      A line there means the repair fired and the user never saw it. No line
 #      just means the model wrote it correctly — also fine.
 #

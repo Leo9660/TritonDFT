@@ -61,12 +61,12 @@ kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=900s
 #   terminationGracePeriodSeconds: 60 before SIGKILL — 8 pods x 60s means the
 #   worker rollout can legitimately take ~8 minutes. Only investigate if a pod
 #   shows Pending / ImagePullBackOff / CrashLoopBackOff:
-#     kubectl -n datahub-llm get pods -l app=tritondft-worker
+#     kubectl -n datahub-llm get pods -l k8s-app=tritondft-worker
 #     kubectl -n datahub-llm describe pod <name> | tail -30
 
 # ---- 4. Verify the image actually changed -----------------------------------
 #   Check the DIGEST, not the tag — past deploys silently no-op'd.
-kubectl -n datahub-llm get pods -l app=tritondft \
+kubectl -n datahub-llm get pods -l k8s-app=tritondft \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
 #   NOTE: this fix is in the API path (src/jobs.py), so the deployment that
