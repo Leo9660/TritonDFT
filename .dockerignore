@@ -39,3 +39,13 @@ k8s/postgres.yaml
 # OS
 .DS_Store
 Thumbs.db
+
+# Credential files. These are gitignored, but Docker does not read .gitignore —
+# the build context is the working tree, so anything here lands in the image via
+# `COPY . /workspace`. The published image is PUBLIC, so a key left in the build
+# context is a key published to Docker Hub.
+env_setup.sh
+*.token
+tok.json
+k8stoken.txt
+*.sql
