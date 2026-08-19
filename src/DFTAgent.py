@@ -148,6 +148,7 @@ class DFTAgent:
         # that the selected value is the one actually used, so it cannot be left
         # to pattern-matching that silently falls back to PBE.
         self.pseudo_choice = dict(pseudo_choice) if pseudo_choice else None
+        self._pseudo_conflict_warned = False
         self._apply_pseudo_choice()
         self.qe_bin_prefix = self.config.qe_bin_dir
         self.remote_qe_bin_prefix = self.config.remote_qe_bin_dir
@@ -216,6 +217,30 @@ class DFTAgent:
             return any(term in choice for term in ("enabled", "include", "with soc", "lspinorb = true"))
         return False
 
+    _QUERY_XC_PATTERNS = (
+        (r"\b(?:pbe\s*sol|pbesol)\b", "PBEsol"),
+        (r"\b(?:lda|local[ -]density approximation)\b", "LDA"),
+        (r"\bpbe\b|perdew[- ]burke[- ]ernzerhof", "PBE"),
+    )
+
+    def _warn_pseudo_conflict(self, text: str) -> None:
+        """Say so when the query asks for a functional the dropdown overrides.
+
+        Silently ignoring it is the worst option: the user wrote the word, the
+        run used something else, and nothing on screen said which won.
+        """
+        if self._pseudo_conflict_warned:
+            return
+        chosen = (self.pseudo_choice or {}).get("xc")
+        for pattern, named in self._QUERY_XC_PATTERNS:
+            if re.search(pattern, text, re.I):
+                if named.lower() != str(chosen).lower():
+                    print(f"[pseudo] The query asks for {named}, but the library is fixed to "
+                          f"{chosen} by the settings panel, which wins. Switch the "
+                          f"pseudopotential mode to 'auto' to let the query decide.")
+                    self._pseudo_conflict_warned = True
+                return
+
     def select_pseudo_dir(
         self,
         request: str,
@@ -225,8 +250,12 @@ class DFTAgent:
         target_scope: str = "step",
     ) -> str:
         """Select an XC/SOC-compatible library from explicit request or scoped assessment."""
-        # An explicit UI choice wins over parsing the query text.
-        if self.pseudo_choice:
+        # In "manual" mode the dropdown is binding and the query is not consulted
+        # — that is the whole point of the control for a user who does not know
+        # what a pseudopotential library is. In "auto" mode we fall through to
+        # the query parsing below, so someone who writes "use PBEsol" gets it.
+        if self.pseudo_choice and self.pseudo_choice.get("mode", "manual") != "auto":
+            self._warn_pseudo_conflict(request or "")
             return self.pseudo_dir
         text = request or ""
         needs_soc = (
@@ -326,6 +355,26 @@ User request:
         xc = self.pseudo_choice.get("xc")
         rel = self.pseudo_choice.get("relativistic")
         acc = self.pseudo_choice.get("accuracy")
+
+        if self.pseudo_choice.get("mode", "manual") == "auto":
+            # The user has handed the choice back to the model. Say what the
+            # default is and what the query may override it with, rather than
+            # asserting a library that is not actually fixed.
+            return "\n".join([
+                "\n### Pseudopotential library (you choose)",
+                f"    - Default if the request does not say otherwise: PseudoDojo {xc},"
+                f" {'fully relativistic' if rel == 'FR' else 'scalar-relativistic'} ({rel}),"
+                f" {acc} accuracy.",
+                "    - If the user's request names a functional or library, USE THAT — it",
+                "      overrides the default above.",
+                "    - Available: PBE and PBEsol in both SR and FR; LDA in SR only.",
+                "      There is no fully-relativistic LDA library, so SOC rules LDA out.",
+                "    - Physics that follows from the choice: only LDA supports the third",
+                "      derivatives QE needs for Raman tensors; SOC requires an FR library;",
+                "      a stringent library needs a higher plane-wave cutoff than standard.",
+                "",
+            ])
+
         lines = [
             "\n### Pseudopotential library (fixed by the user — do NOT change it)",
             f"    - PseudoDojo {xc}, {'fully relativistic' if rel == 'FR' else 'scalar-relativistic'}"
@@ -353,6 +402,9 @@ User request:
 
     def _apply_pseudo_choice(self):
         """Resolve the explicit pseudopotential choice, if any, onto pseudo_dir."""
+        # The agent is reused across jobs, so a warning already shown for a
+        # previous query must not suppress this one's.
+        self._pseudo_conflict_warned = False
         if not self.pseudo_choice:
             return
         from config import resolve_pseudo_dir

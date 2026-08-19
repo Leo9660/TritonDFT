@@ -129,6 +129,16 @@ DEFAULT_PSEUDO_CHOICE = ("PBE", "SR", "standard")
 _REL_DIRS = {"SR": "SR_v0.4.1", "FR": "FR_v0.4"}
 
 
+# How the user's library selection interacts with the query.
+#   "manual" — the dropdown is binding. A naive user gets exactly what they
+#              picked, and nothing in the prompt can talk the model out of it.
+#   "auto"   — the agent chooses, honouring a library named in the query. This
+#              is the pre-dropdown behaviour and what an expert wants; it is
+#              also how someone writing "use PBEsol" gets PBEsol.
+# The dropdown values remain the fallback in "auto" for when the query is silent.
+PSEUDO_MODES = ("manual", "auto")
+
+
 def resolve_pseudo_dir(pseudo_paths, xc: str, rel: str, accuracy: str):
     """Map (functional, relativistic treatment, accuracy) to a library path.
 
