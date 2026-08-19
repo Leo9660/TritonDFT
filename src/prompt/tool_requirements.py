@@ -241,7 +241,16 @@ dosx_requirement_template = """
         * occupations='tetrahedra'     -> bz_sum='tetrahedra'
         * occupations='tetrahedra_lin' -> bz_sum='tetrahedra_lin'
         * occupations='tetrahedra_opt' -> bz_sum='tetrahedra_opt'
-        * occupations='smearing' or 'fixed' -> bz_sum='smearing'
+        * occupations='smearing'       -> bz_sum='smearing'
+        * occupations='fixed'          -> bz_sum='smearing', and you MUST also
+          set ngauss=0 and an explicit degauss (see below).
+    - CRITICAL for occupations='fixed'. That run stores NO broadening, so dos.x
+      reads degauss=0.0 from the save file and sums Gaussians of zero width. It
+      does not fail: it prints JOB DONE and writes a full-length file in which
+      every DOS value is meaningless. A band-gap workflow uses occupations='fixed'
+      by necessity, so this is the common case, not an edge case. Set
+      degauss=0.01 explicitly. NOTE THE UNITS: degauss is in Ry, while Emin,
+      Emax and DeltaE in this same namelist are in eV.
     - Do not set ngauss or degauss when bz_sum is a tetrahedron method.
     - Do NOT include &projwfc or any other namelists. Only &DOS.
 """
