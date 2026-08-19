@@ -1555,9 +1555,11 @@ User request:
                                  max_new_tokens=self.max_new_tokens,
                                  return_full_text=False)
             text = (out[0].get("generated_text") or "").strip()
-            # Keep the step-by-step detail under the answer — it is the evidence
-            # for it, and a user who wants to check a number needs it.
-            return f"{text}\n\n---\n\n{joined}" if text else joined
+            # The answer replaces the step verdicts rather than sitting on top of
+            # them: the per-step detail is already in the run log and in each
+            # step's card, and repeating it here buried the answer under the
+            # working. Only fall back to it if synthesis produced nothing.
+            return text or joined
         except Exception as e:
             if self.verbose:
                 print(f"[analysis] final answer synthesis failed: {e}")
