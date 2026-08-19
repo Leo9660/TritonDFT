@@ -6,6 +6,7 @@ records the absolute path in Job.run_dir; the API serves files from it.
 """
 import io
 import os
+import math
 import re
 import json
 import shutil
@@ -17,8 +18,15 @@ from pathlib import Path
 USEFUL_EXTS = {
     ".in", ".out", ".xml", ".json", ".band", ".gnu",
     ".dat", ".txt", ".log", ".cif", ".csv", ".png",
-    ".sh",   # run_all.sh — the runner emitted for script-only bundles
+    ".sh",    # run_all.sh — the runner emitted for script-only bundles
+    ".dos",   # dos.x writes fildos='<prefix>.dos'
+    ".freq", ".modes",   # matdyn.x dispersion and mode files
 }
+# Files whose NAME identifies them, because their extension does not. projwfc.x
+# writes `<prefix>.pdos_atm#1(Mo)_wfc#3(d)`, whose suffix is "#3(d)" — so an
+# extension whitelist alone hid every projected-DOS file from the list and the
+# zip, and they are the whole point of asking for a PDOS.
+USEFUL_NAME_PARTS = ("pdos_atm", "pdos_tot")
 # Internal bookkeeping files surfaced elsewhere (result cards / Analysis section)
 # — hide them from the user-facing file list and zip.
 HIDDEN_FILES = {"analysis.json", "run_meta.json"}
@@ -70,7 +78,8 @@ def list_files(run_dir: Path):
                 continue
             if f.name in HIDDEN_FILES:
                 continue
-            if f.suffix.lower() not in USEFUL_EXTS:
+            if (f.suffix.lower() not in USEFUL_EXTS
+                    and not any(k in f.name for k in USEFUL_NAME_PARTS)):
                 continue
             try:
                 size = f.stat().st_size
@@ -321,6 +330,11 @@ def _read_xy_table(path: Path):
                 pass
     except OSError:
         return None
+    # A degenerate run (e.g. a Gaussian sum with degauss=0) still writes a
+    # full-length table, but of NaN/inf. Those survive float() and then poison
+    # the SVG path, so the plot renders as an empty box with no explanation.
+    # Drop them, and treat a table with nothing finite left as no data at all.
+    rows = [r for r in rows if all(math.isfinite(v) for v in r)]
     if not rows:
         return None
     ncol = min(len(r) for r in rows)
