@@ -50,6 +50,7 @@ class MeResponse(BaseModel):
     credits: int
     is_admin: bool
     is_unlimited: bool
+    can_use_cpu: bool
 
 
 def issue_jwt(email: str):
@@ -209,4 +210,5 @@ async def me(user: User = Depends(get_current_user)):
         credits=user.credits,
         is_admin=user.is_admin,
         is_unlimited=user.is_unlimited,
+        can_use_cpu=user.can_use_cpu,
     )
