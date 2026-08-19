@@ -77,6 +77,15 @@ spec:
             port: 8000
           initialDelaySeconds: 20
           periodSeconds: 30
+          # Deliberately slack. The default timeoutSeconds=1 / failureThreshold=3
+          # killed pods that were merely busy: /healthz is served by the same
+          # event loop as everything else, so a slow request used to make the
+          # pod look dead and kubelet restarted it, taking every in-flight
+          # request with it. That surfaced to users as an unexplained
+          # "Something went wrong". Restarting a busy pod is worse than waiting
+          # for it.
+          timeoutSeconds: 5
+          failureThreshold: 6
         # Read-only mount of the shared run-output PVC so the API can serve
         # artifact files/zips that the workers wrote.
         volumeMounts:
