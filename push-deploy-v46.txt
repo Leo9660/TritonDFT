@@ -1,14 +1,33 @@
 # =============================================================================
-# TritonDFT — build / push image v45 + deploy to NRP
+# TritonDFT — build / push image v46 + deploy to NRP
 #
 # Run on the HOST machine (needs docker + kubectl). Run line by line.
-# v45 because image tags are IMMUTABLE — v44 is live, never reuse a tag.
+# v46 because image tags are IMMUTABLE — v45 is live, never reuse a tag.
 #
 # NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
 # The postgres role is `tritondft`, NOT `postgres`.
 #
-# WHAT'S IN v45 — one scientific-correctness fix, one resource change, and
-# a pile of things that made correct runs look broken
+# WHAT'S IN v46
+#
+# This supersedes v45 rather than adding to it. The list below is everything
+# since v44; whichever commit your v45 image was built from, v46 contains all of
+# it, so run every verification step regardless of what you already checked.
+#
+# New since v45 was pushed:
+#
+#  FEAT The run STATES which pseudopotential library it used. (0be522b)
+#       Under auto the settings panel can only show the fallback, and the
+#       request or the model may have chosen otherwise — so nothing on screen
+#       said what a run actually ran with. The agent now prints
+#         [pseudo] Library for this run: PseudoDojo PBEsol · SR · standard
+#                  (from your request)
+#       as soon as the FIRST step fixes pseudo_dir, which is the vc-relax step
+#       in any workflow that has one. The frontend shows that line in the
+#       settings card in preference to the panel's own setting, and says
+#       "library not settled yet" until it arrives rather than implying the
+#       fallback is the answer.
+#
+# Everything from the v45 list, restated:
 # -----------------------------------------------------------------------------
 #  FIX  restart_mode is repaired, not rejected. (98cc518)
 #       NEW_STEP_RESTART_MODE_INVALID fired on nearly every nscf/bands step,
@@ -209,12 +228,12 @@ kubectl -n datahub-llm get pods
 # ---- 1. Pull ----------------------------------------------------------------
 cd ~/workspace/TritonDFT
 git pull
-grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v45
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v46
 
 # ---- 2. Build & push --------------------------------------------------------
 docker login
-docker build -t yil384/tritondft:v45 .
-docker push yil384/tritondft:v45
+docker build -t yil384/tritondft:v46 .
+docker push yil384/tritondft:v46
 
 #   NOTE: .dockerignore now excludes env_setup.sh, *.token, tok.json,
 #   k8stoken.txt and *.sql. Those were being baked into every previous image via
@@ -309,6 +328,12 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      (it was always there, just filtered out) but still no plot: the numbers
 #      in it are degenerate. That run has to be repeated to get a real DOS.
 #
+#   f0) The settings card must name the library actually used, not the panel's
+#      setting. Start a run and watch the card: it should go from
+#      "library not settled yet" to e.g. "PseudoDojo PBE · SR · standard" the
+#      moment step 1 gets its input. If it never changes, the [pseudo] line is
+#      not reaching the stream.
+#
 #   f) Pseudopotential modes — this is a DEFAULT change, test both directions.
 #      Leave it on "Let the agent choose" (now the default, on the left, with
 #      the three dropdowns greyed out) and ask for anything "with PBEsol". Open
@@ -348,5 +373,5 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #
 # The scientific consequence is the part that matters: every silicon number this
 # service has produced belongs to a metastable polymorph. Re-run anything from
-# before v45 that is going into the workshop.
+# before v46 that is going into the workshop.
 # =============================================================================
