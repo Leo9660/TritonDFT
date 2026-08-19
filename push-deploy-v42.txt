@@ -46,7 +46,7 @@ kubectl -n datahub-llm get pods
 # ---- 1. Back up the database BEFORE a migration -----------------------------
 #   Additive and reversible on paper, but this is the workshop database.
 kubectl -n datahub-llm exec deploy/postgres -- \
-  pg_dump -U postgres tritondft > ~/tritondft-backup-pre-v42.sql
+  pg_dump -U tritondft tritondft > ~/tritondft-backup-pre-v42.sql
 ls -lh ~/tritondft-backup-pre-v42.sql        # must be non-empty
 
 # ---- 2. Pull ----------------------------------------------------------------
@@ -68,9 +68,9 @@ kubectl -n datahub-llm rollout status deploy/tritondft --timeout=300s
 
 #   Confirm the migration landed before touching the workers:
 kubectl -n datahub-llm exec deploy/postgres -- \
-  psql -U postgres -d tritondft -c "\d users" | grep can_use_cpu
+  psql -U tritondft -d tritondft -c "\d users" | grep can_use_cpu
 kubectl -n datahub-llm exec deploy/postgres -- \
-  psql -U postgres -d tritondft -c "\dt app_settings"
+  psql -U tritondft -d tritondft -c "\dt app_settings"
 
 kubectl apply -f k8s/worker.yaml
 kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=900s
