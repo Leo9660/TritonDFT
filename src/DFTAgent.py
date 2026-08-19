@@ -310,6 +310,47 @@ User request:
             raise ValueError("Scientific assessment did not return the required JSON strategy.")
         return assessment
 
+    def _pseudo_context(self) -> str:
+        """What the model needs to KNOW about the library it is being given.
+
+        The library is enforced by patching, but the model still has to reason
+        with it: the accuracy tier constrains the cutoffs it should propose, the
+        relativistic treatment decides whether SOC is even possible, and the
+        functional changes which corrections apply (only LDA supports the third
+        derivatives QE needs for Raman; PBE needs an explicit vdW term for
+        layered systems). Returns "" when the default is in force, so nothing is
+        said that is not true.
+        """
+        if not self.pseudo_choice:
+            return ""
+        xc = self.pseudo_choice.get("xc")
+        rel = self.pseudo_choice.get("relativistic")
+        acc = self.pseudo_choice.get("accuracy")
+        lines = [
+            "\n### Pseudopotential library (fixed by the user — do NOT change it)",
+            f"    - PseudoDojo {xc}, {'fully relativistic' if rel == 'FR' else 'scalar-relativistic'}"
+            f" ({rel}), {acc} accuracy.",
+            f"    - The exchange-correlation functional IS {xc}. Do not propose a different one.",
+        ]
+        if acc == "stringent":
+            lines.append("    - A stringent library needs a HIGHER plane-wave cutoff than the "
+                         "standard one for the same element; choose accordingly.")
+        else:
+            lines.append("    - Standard-accuracy library; the usual PseudoDojo cutoffs apply.")
+        if rel == "FR":
+            lines.append("    - Fully relativistic pseudopotentials: spin-orbit coupling is "
+                         "available (noncolin/lspinorb) if the science calls for it.")
+        else:
+            lines.append("    - Scalar-relativistic pseudopotentials: spin-orbit coupling is "
+                         "NOT available with this library.")
+        if xc == "LDA":
+            lines.append("    - LDA is the only functional for which QE implements the third-order "
+                         "derivatives needed by Raman (lraman).")
+        else:
+            lines.append(f"    - {xc} is a GGA: QE cannot compute Raman intensities with it "
+                         "(third-order derivatives are not implemented for GGA).")
+        return "\n".join(lines) + "\n"
+
     def _apply_pseudo_choice(self):
         """Resolve the explicit pseudopotential choice, if any, onto pseudo_dir."""
         if not self.pseudo_choice:
@@ -714,7 +755,8 @@ User request:
         
         # 1. Parameter Generation
         t0 = time.perf_counter()
-        prompt = get_prompt(prompt_type="parameter", subproblem=subproblem['problem'],
+        prompt = get_prompt(prompt_type="parameter", pseudo_context=self._pseudo_context(),
+                            subproblem=subproblem['problem'],
                             fn=subproblem['tool'], tool=self.dft_tool, query=query, previous_memory=total_memory)
         try:
             params_out = self.generator(prompt[0]['content'], max_new_tokens=self.max_new_tokens, return_full_text=False)
@@ -783,19 +825,7 @@ User request:
             t_script_start = time.perf_counter()
             
             tool_requirements = build_tool_requirements(fn_spec, self.pseudo_dirs)
-            if self.pseudo_choice:
-                # Tell the model what was chosen so its OTHER decisions stay
-                # coherent (LDA is the only functional QE can do Raman with;
-                # layered systems need vdW under PBE). The value itself is still
-                # enforced by patching, not by trusting this text.
-                tool_requirements = (
-                    f"### Fixed by the user — do not change\n"
-                    f"    - Exchange-correlation functional: {self.pseudo_choice.get('xc')}\n"
-                    f"    - Pseudopotentials: {self.pseudo_choice.get('relativistic')} "
-                    f"({'fully relativistic, SOC-capable' if self.pseudo_choice.get('relativistic') == 'FR' else 'scalar-relativistic'}), "
-                    f"{self.pseudo_choice.get('accuracy')} accuracy\n"
-                    f"    - Choose cutoffs appropriate for this library.\n\n"
-                ) + tool_requirements
+            tool_requirements = self._pseudo_context() + tool_requirements
             
             # Construct Prompt
             if loop_count > 1:
