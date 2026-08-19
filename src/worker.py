@@ -302,6 +302,38 @@ def finalize(job_id, user_id, usage_log_id, status, output, error,
 
 # ───── Job execution ─────
 
+def _apply_openai_override(agent):
+    """Swap in the admin-set OpenAI key if one is configured.
+
+    The agent (and the OpenAI client inside its generator) is built once and
+    reused across jobs, so a key rotated through the admin page would otherwise
+    not take effect until the pod restarted — which defeats the point of having
+    a rotation path that does not need kubectl.
+
+    Only rebuilds the client when the key actually changed, so the normal case
+    costs one indexed SELECT.
+    """
+    db = SessionLocal()
+    try:
+        from admin import get_openai_override
+        key = get_openai_override(db) or os.getenv("OPENAI_API_KEY")
+    except Exception:
+        return
+    finally:
+        db.close()
+    if not key or getattr(agent, "_applied_openai_key", None) == key:
+        return
+    try:
+        from openai import OpenAI
+        agent.generator._oa_client = OpenAI(
+            api_key=key, base_url=os.getenv("OPENAI_BASE_URL") or None
+        )
+        agent._applied_openai_key = key
+        log(f"openai key applied: \u2026{key[-4:]}")
+    except Exception as e:
+        log(f"openai key override failed: {e}")
+
+
 def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only=False, mode="auto", pseudo_choice=None):
     # Reconfigure the (reused) agent for THIS job: model, script-only mode, and
     # a fresh token tally so billing reflects only this job's usage.
@@ -312,6 +344,7 @@ def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only
         except Exception:
             pass
     agent.script_only = bool(script_only)
+    _apply_openai_override(agent)
     # Re-resolve the pseudopotential library for THIS job (the agent is reused
     # across jobs, so a previous job's choice must not leak into this one).
     agent.pseudo_choice = dict(pseudo_choice) if pseudo_choice else None

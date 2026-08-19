@@ -34,8 +34,26 @@ class User(Base):
     is_admin = Column(Boolean, default=False, nullable=False)
     is_banned = Column(Boolean, default=False, nullable=False)
     is_unlimited = Column(Boolean, default=False, nullable=False)
+    # Permission to actually run QE on the cluster. Distinct from is_unlimited,
+    # which is about billing: someone can be allowed to burn CPU while still
+    # being charged, and someone can have free credits for script-only use.
+    can_use_cpu = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = Column(DateTime)
+
+
+class AppSetting(Base):
+    """Operational settings an admin can change without a redeploy.
+
+    Only used for things that must be rotatable while the service is running —
+    today that is the OpenAI API key, which otherwise requires kubectl access to
+    patch the k8s secret and a rollout to take effect.
+    """
+    __tablename__ = "app_settings"
+    key = Column(String, primary_key=True)
+    value = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_by = Column(String)
 
 
 class MagicLink(Base):
@@ -149,6 +167,7 @@ def _run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS plots BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pseudo_choice JSON",
         "ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS model TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS can_use_cpu BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     with engine.begin() as conn:
         for stmt in migrations:

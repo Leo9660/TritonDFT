@@ -119,3 +119,7 @@ def job_not_found():
 
 def empty_message():
     return APIError(400, "empty_message", "Your message is empty.")
+
+
+def bad_api_key():
+    return APIError(400, "bad_api_key", "That does not look like an API key.")
