@@ -75,7 +75,7 @@ def log(msg: str):
 def claim_job():
     """Atomically claim one queued job.
     Returns (id, user_id, usage_log_id, query, model, script_only, mode,
-    pseudo_choice, context) or None."""
+    pseudo_choice, context, conversation_id) or None."""
     db = SessionLocal()
     try:
         row = db.execute(text("""
@@ -94,7 +94,7 @@ def claim_job():
         job = db.query(Job).filter(Job.id == row[0]).first()
         return (job.id, job.user_id, job.usage_log_id, job.query,
                 job.model, bool(job.script_only), job.mode or "auto",
-                job.pseudo_choice, job.context or "")
+                job.pseudo_choice, job.context or "", job.conversation_id)
     finally:
         db.close()
 
@@ -365,6 +365,99 @@ def triage(agent, query: str, context: str):
     except Exception as e:
         log(f"triage failed, treating as a calculation: {e}")
         return "calculate", ""
+
+
+# A follow-up may read at most this much: two rounds so it can look, think and
+# look once more, and a byte cap because a pw.x .out is routinely 150 kB and a
+# vc-relax one much larger.
+FOLLOWUP_ROUNDS = 2
+FOLLOWUP_MAX_FILES = 4
+FOLLOWUP_MAX_CHARS = 60000
+
+
+def _followup_manifest(db, user_id, conversation_id, current_job_id):
+    """What has actually been run in this chat: each job, what it concluded, and
+    what it left on disk. This is the index the follow-up agent browses instead
+    of having every file pasted into its prompt."""
+    from artifacts import safe_run_dir, list_files
+    if not conversation_id:
+        return "(no earlier calculations found in this conversation)", {}
+    rows = (db.query(Job)
+              .filter(Job.user_id == user_id,
+                      Job.conversation_id == conversation_id,
+                      Job.id != current_job_id,
+                      Job.status.in_(("done", "failed", "timeout", "cancelled")))
+              .order_by(Job.created_at.desc())
+              .limit(5).all())
+    if not rows:
+        return "(no earlier calculations found in this conversation)", {}
+    lines, dirs = [], {}
+    for j in reversed(rows):
+        run_dir = safe_run_dir(j.run_dir)
+        names = [f["name"] for f in list_files(run_dir)] if run_dir else []
+        if run_dir:
+            dirs[str(j.id)] = run_dir
+        analysis = ((j.result or {}).get("analysis") if isinstance(j.result, dict) else None)
+        lines.append(
+            f"- job {j.id} [{j.status}]: {str(j.query or '')[:200]}\n"
+            f"    conclusion: {(analysis or '(none recorded)')[:600]}\n"
+            f"    files: {', '.join(names) if names else '(none on disk)'}"
+        )
+    return "\n".join(lines), dirs
+
+
+def answer_followup(agent, query, context, db, user_id, conversation_id, job_id):
+    """Answer a question about earlier runs, reading files only when needed.
+
+    Returns the answer text, or None to fall back to running a calculation.
+    """
+    from prompt.utils import get_prompt
+    from utils import extract_json_brutal
+    from artifacts import is_safe_filename
+
+    manifest, dirs = _followup_manifest(db, user_id, conversation_id, job_id)
+    documents = "(none yet)"
+    for round_no in range(FOLLOWUP_ROUNDS + 1):
+        messages = get_prompt(prompt_type="followup", query=query,
+                              context=context or "(nothing yet)",
+                              manifest=manifest, documents=documents)
+        out = agent.generator(messages[0]["content"],
+                              max_new_tokens=2000, return_full_text=False)
+        parsed = extract_json_brutal(out[0].get("generated_text", "")) or {}
+        action = str(parsed.get("action", "")).strip().lower()
+
+        if action == "answer" or round_no == FOLLOWUP_ROUNDS:
+            answer = str(parsed.get("answer", "")).strip()
+            return answer or None
+
+        if action != "read":
+            return None
+
+        chunks, budget = [], FOLLOWUP_MAX_CHARS
+        for req in (parsed.get("files") or [])[:FOLLOWUP_MAX_FILES]:
+            jid, name = str(req.get("job", "")), str(req.get("name", ""))
+            run_dir = dirs.get(jid)
+            # is_safe_filename rejects traversal; run_dir came from safe_run_dir,
+            # and jid had to appear in a manifest already filtered by user_id.
+            if run_dir is None or not is_safe_filename(name):
+                continue
+            f = run_dir / name
+            if not f.is_file() or f.is_symlink():
+                continue
+            try:
+                body = f.read_text(errors="ignore")[:budget]
+            except OSError:
+                continue
+            budget -= len(body)
+            chunks.append(f"--- {name} (job {jid}) ---\n{body}")
+            if budget <= 0:
+                break
+        if not chunks:
+            documents = "(the files you asked for could not be read)"
+        else:
+            documents = "\n\n".join(chunks)
+        log(f"followup: read {len(chunks)} file(s), round {round_no + 1}")
+    return None
 
 
 def run_job(agent, job_id, user_id, usage_log_id, query, model=None, script_only=False, mode="auto", pseudo_choice=None):
@@ -675,7 +768,7 @@ def main():
             continue
 
         (job_id, user_id, usage_log_id, query, model, script_only, mode,
-         pseudo_choice, context) = claimed
+         pseudo_choice, context, conversation_id) = claimed
         log(f"claimed job {job_id}")
         try:
             if model:
@@ -690,6 +783,19 @@ def main():
             except Exception:
                 pass
             intent, answer = triage(agent, query, context)
+            if intent == "followup":
+                # Let it look at what is on disk before answering. Falling back
+                # to triage's one-shot answer — and then to a real calculation —
+                # keeps a broken loop from swallowing a genuine question.
+                db = SessionLocal()
+                try:
+                    richer = answer_followup(agent, query, context, db, user_id,
+                                             conversation_id, job_id)
+                finally:
+                    db.close()
+                answer = richer or answer
+                if not answer:
+                    intent = "calculate"
             if intent != "calculate":
                 # Answered without touching Materials Project or Quantum ESPRESSO.
                 finalize(job_id, user_id, usage_log_id, "done", answer, None,
