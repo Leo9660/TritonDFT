@@ -62,29 +62,39 @@ spec:
         # Per-pw.x cap; several of these must fit inside JOB_TIMEOUT_S.
         - name: QE_TIMEOUT_S
           value: "600"
-        # MPI ranks per QE run — must stay ≤ the CPU limit below so we don't
-        # oversubscribe cores when many pods land on one node.
+        # MPI ranks per QE run. Kept EQUAL to requests.cpu below, not to the
+        # limit: the limit is only reachable when the node happens to be idle,
+        # while the request is what the scheduler guarantees. Launching 32 ranks
+        # against a 4-core guarantee is what produced runs reporting 11.6s CPU
+        # against 26.8s wall — more than half the time descheduled, plus the
+        # communication cost of 32 ranks for the throughput of four.
         - name: JOB_NP
-          value: "32"
-        # k-point pools. Plane-wave parallelism saturates well before 32 ranks:
-        # measured on 6-atom MoS2, 8 -> 32 ranks alone was 2.1x, but 3.8x with
-        # pools, because k-points parallelise almost linearly. Set 0 to disable.
-        - name: QE_NK
           value: "8"
+        # k-point pools, off. Measured on diamond Si (2 atoms, 29 irreducible
+        # k-points): 8 ranks takes 0.89s with pools and 0.89s without — no
+        # effect at all at this size. Pools earn their keep on larger cells with
+        # many k-points, not on the workshop systems, and splitting 8 ranks into
+        # pools only shrinks the plane-wave group each one gets.
+        - name: QE_NK
+          value: "0"
         - name: PYTHONUNBUFFERED
           value: "1"
         - name: OMP_NUM_THREADS
           value: "1"
         resources:
           requests:
-            # Raised with the limit: requests are what the scheduler guarantees,
-            # so leaving it at 2 while allowing 32 would make the higher number
-            # mostly theoretical — CFS throttles back toward the request as soon
-            # as a node gets busy.
-            cpu: "4"
+            # Equal to JOB_NP: every rank we launch is a core we are promised.
+            # 8 replicas x 8 = 64 cores reserved, which is placeable on NRP;
+            # 8 x 32 would be a 256-core reservation on an opportunistic
+            # priority class with no allocation, and the pods would sit Pending.
+            cpu: "8"
             memory: "8Gi"
           limits:
-            cpu: "32"
+            # Headroom for a burst on an idle node, not a target. Measured on
+            # diamond Si, 8 -> 32 ranks buys 0.3s (0.89s -> 0.60s) while the
+            # harness around each step costs ~30s, so there is nothing here
+            # worth a larger reservation.
+            cpu: "16"
             memory: "48Gi"
         volumeMounts:
         - name: workdir
