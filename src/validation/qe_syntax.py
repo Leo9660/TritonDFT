@@ -20,6 +20,7 @@ Official references:
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -291,3 +292,39 @@ def remove_undocumented_namelist_keywords(path: str, exec_name: str) -> List[str
     if repaired:
         source.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
     return repaired
+
+
+def force_from_scratch(path: str, exec_name: str) -> List[str]:
+    """Rewrite restart_mode='restart' to 'from_scratch' on a newly generated step.
+
+    Deterministic repair rather than a rejection, because there is no judgement
+    involved: a step the agent has just written has no checkpoint of its own to
+    resume from, so 'from_scratch' is the only correct value, always.
+
+    The model reaches for 'restart' by confusing two different things — reusing
+    a previous SCF's charge density (which is what calculation='nscf' plus a
+    shared prefix/outdir does) with resuming an interrupted run of THIS step
+    (which is what restart_mode governs). Left in place, QE looks for wavefunction
+    and XML checkpoints that either do not exist or belong to the SCF step, and
+    the failure is sometimes a crash and sometimes silently wrong numbers.
+
+    Returns a list of human-readable repairs, empty if nothing was changed.
+    """
+    if os.path.basename(exec_name or "") not in ("pw.x", "ph.x"):
+        return []
+    try:
+        text = Path(path).read_text(errors="ignore")
+    except OSError:
+        return []
+
+    pattern = re.compile(
+        r"(?mi)^(\s*restart_mode\s*=\s*)(['\"])\s*restart\s*\2(.*)$"
+    )
+    if not pattern.search(text):
+        return []
+    fixed = pattern.sub(lambda m: f"{m.group(1)}'from_scratch'{m.group(3)}", text)
+    try:
+        Path(path).write_text(fixed, encoding="utf-8")
+    except OSError:
+        return []
+    return [f"{os.path.basename(path)}: restart_mode 'restart' -> 'from_scratch'"]

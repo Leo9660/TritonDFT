@@ -19,7 +19,7 @@ parse_plan_string, patch_qe_input_file, get_qe_result, preprocess_output_list, e
 validate_pseudos_exist, package_pseudos_for_remote, read_qe_cutoffs, task_file_stem
 from executor import run_qe_inputs
 from evaluate.compare import compare_evaluation
-from validation import remove_undocumented_namelist_keywords, validate_qe_input
+from validation import force_from_scratch, remove_undocumented_namelist_keywords, validate_qe_input
 
 
 def _generate_nonempty_text(
@@ -973,6 +973,12 @@ User request:
             for path in input_paths:
                 deterministic_repairs.extend(
                     remove_undocumented_namelist_keywords(path, fn_spec.exec)
+                )
+                # restart_mode='restart' on a step the agent just wrote is always
+                # wrong and never a judgement call, so fix it here rather than
+                # spending a regeneration round on the validator's rejection.
+                deterministic_repairs.extend(
+                    force_from_scratch(path, fn_spec.exec)
                 )
             if deterministic_repairs and self.verbose:
                 print(
