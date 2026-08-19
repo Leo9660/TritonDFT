@@ -38,7 +38,7 @@
 #   https://portal.nrp-nautilus.io/  ->  Get Config  ->  overwrite ~/.kube/config
 #   (CILogon; use the UCSD login.) Then confirm:
 kubectl config current-context
-kubectl -n tritondft get pods
+kubectl -n datahub-llm get pods
 
 # ---- 1. Make sure the tree is what you want in the image -------------------
 cd ~/workspace/TritonDFT
@@ -57,24 +57,24 @@ docker push yil384/tritondft:v39
 # ---- 3. Deploy --------------------------------------------------------------
 #   Both manifests are already pinned to v39 with imagePullPolicy: Always,
 #   so `apply` is enough — no `set image` needed.
-kubectl -n tritondft apply -f k8s/deployment.yaml
-kubectl -n tritondft apply -f k8s/worker.yaml
+kubectl -n datahub-llm apply -f k8s/deployment.yaml
+kubectl -n datahub-llm apply -f k8s/worker.yaml
 
-kubectl -n tritondft rollout status deploy/tritondft --timeout=300s
-kubectl -n tritondft rollout status deploy/tritondft-worker --timeout=600s
+kubectl -n datahub-llm rollout status deploy/tritondft --timeout=300s
+kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=600s
 
 #   If a rollout stalls with pods Pending, it is the 32-core limit (see RISK
 #   below), not a bad image. Check with:
-#     kubectl -n tritondft describe pod -l app=tritondft-worker | tail -30
+#     kubectl -n datahub-llm describe pod -l app=tritondft-worker | tail -30
 
 # ---- 4. Verify the image actually changed ----------------------------------
 #   Past deploys silently no-op'd (same tag pushed twice, IfNotPresent not
 #   repulling). Confirm the running digest, not just the tag:
-kubectl -n tritondft get pods -l app=tritondft-worker \
+kubectl -n datahub-llm get pods -l app=tritondft-worker \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 
 #   And that the new env reached the container:
-kubectl -n tritondft exec deploy/tritondft-worker -- sh -c 'echo JOB_NP=$JOB_NP QE_NK=$QE_NK'
+kubectl -n datahub-llm exec deploy/tritondft-worker -- sh -c 'echo JOB_NP=$JOB_NP QE_NK=$QE_NK'
 #   expect: JOB_NP=32 QE_NK=8
 
 # ---- 5. Smoke test ----------------------------------------------------------
@@ -82,7 +82,7 @@ kubectl -n tritondft exec deploy/tritondft-worker -- sh -c 'echo JOB_NP=$JOB_NP 
 #      request a magic link, click it, confirm no 422.
 #
 #   b) Then run one job end to end and watch the ranks:
-kubectl -n tritondft logs -l app=tritondft-worker -f --tail=100 | grep -E "runner|nk"
+kubectl -n datahub-llm logs -l app=tritondft-worker -f --tail=100 | grep -E "runner|nk"
 #      expect a line like:
 #        [runner] cmd: mpirun ... -np 32 /workspace/QuantumE/bin/pw.x -nk 8 -in relax.in
 #      -nk must appear ONLY for pw.x and ph.x. If you see it on dos.x/matdyn.x
@@ -111,6 +111,6 @@ kubectl -n tritondft logs -l app=tritondft-worker -f --tail=100 | grep -E "runne
 #      on a quiet node and is a best case, not a guarantee.
 #
 # Rollback: manifests are pinned by tag, so
-#   kubectl -n tritondft set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v37
-#   kubectl -n tritondft set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v37
+#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v37
+#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v37
 # =============================================================================
