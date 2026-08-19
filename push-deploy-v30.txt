@@ -1,0 +1,50 @@
+# =============================================================================
+# TritonDFT — build / push image v30 + deploy to NRP (assistant mode)
+# Run these on the HOST machine (docker + kubectl required). Run line by line.
+# NOTE: v29 is currently live. Image tags are immutable + imagePullPolicy=
+#       IfNotPresent, so you MUST use a NEW tag (v30). Never reuse v29.
+# =============================================================================
+
+# ---- 0. Get latest code -----------------------------------------------------
+cd <path>/TritonDFT
+git checkout main && git pull            # PR#3 (assistant mode) is already merged
+
+# If you want planner.py / utils.py changes baked into the image, commit them
+# FIRST (they are COPY'd into the image from the working tree).
+
+# ---- 1. Build & push image (tag = v30) -------------------------------------
+docker login                                          # push to docker.io/yil384
+docker build -t docker.io/yil384/tritondft:v30 .
+docker push  docker.io/yil384/tritondft:v30
+
+# ---- 2. Bump image tag in BOTH manifests (API + worker) --------------------
+sed -i 's#tritondft:v29#tritondft:v30#' k8s/deployment.yaml k8s/worker.yaml
+grep -n 'image:.*tritondft' k8s/deployment.yaml k8s/worker.yaml   # verify -> v30
+
+# ---- 3. Log in to NRP and deploy -------------------------------------------
+kubectl config use-context nautilus                   # NRP context (kubelogin OIDC)
+kubectl -n datahub-llm apply -f k8s/deployment.yaml -f k8s/worker.yaml
+
+# ---- 4. Wait for rollout + verify new image --------------------------------
+kubectl -n datahub-llm rollout status deploy/tritondft
+kubectl -n datahub-llm rollout status deploy/tritondft-worker
+kubectl -n datahub-llm get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}' | sort -u
+
+# ---- 5. Smoke-test assistant mode (gate logic never ran locally!) ----------
+# NOTE: the pod label is `k8s-app`, NOT `app`. Using `-l app=...` matches
+#       nothing and prints "No resources found in datahub-llm namespace".
+# NOTE: there are 8 worker pods. `-f` follows one stream per pod, but kubectl
+#       caps concurrent streams at 5 -> add --max-log-requests 8.
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=100 -f --max-log-requests 8
+
+# If that still shows nothing, diagnose in this order:
+kubectl config current-context                                   # expect: nautilus
+kubectl -n datahub-llm get pods -l k8s-app=tritondft-worker      # exist + Running?
+kubectl -n datahub-llm get pods --show-labels                    # see real labels
+
+# API (FastAPI) logs use the same convention:
+kubectl -n datahub-llm logs -l k8s-app=tritondft --tail=100 -f
+
+# Submit an assistant job -> status should become awaiting_approval, pending_step
+# should carry scripts. Exercise approve / suggest / cancel, and confirm
+# auto-approve after APPROVAL_TIMEOUT_S (600s).

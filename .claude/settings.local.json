@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl get:*)",
+      "Bash(timeout:*)",
+      "Bash(script:*)",
+      "Bash(rm:*)",
+      "Bash(~/bin/kubectl-oidc_login --version 2>&1 || ~/bin/kubectl-oidc_login version 2>&1)",
+      "Bash(mv ~/bin/kubectl-oidc_login ~/bin/kubectl-oidc_login.bak)",
+      "Bash(curl -L -o ~/bin/kubectl-oidc_login \"https://github.com/int128/kubelogin/releases/download/v1.28.1/kubelogin_linux_amd64.zip\")",
+      "Read(//tmp/**)",
+      "Bash(unzip -o ~/bin/kubectl-oidc_login -d kubelogin_extract)",
+      "Bash(mv ~/bin/kubectl-oidc_login ~/bin/kubectl-oidc_login.zip)",
+      "Bash(cp kubelogin_extract/kubelogin ~/bin/kubectl-oidc_login)",
+      "Bash(chmod +x ~/bin/kubectl-oidc_login)",
+      "Bash(~/bin/kubectl-oidc_login --version)",
+      "Bash(crontab:*)",
+      "Bash(bash /home/zhengding/workspace/TritonDFT/scripts/renew-nrp-deployments.sh 2>&1)",
+      "Bash(echo:*)"
+    ]
+  }
+}

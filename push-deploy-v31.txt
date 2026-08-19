@@ -1,0 +1,41 @@
+# =============================================================================
+# TritonDFT — build / push image v31 + deploy to NRP
+# FIX: worker crashed at import because credits.py downloaded tiktoken BPE files
+#      from openaipublic.blob.core.windows.net and NRP workers have flaky/absent
+#      DNS to that host. v31 (a) bakes both encodings into the image at build
+#      time (Dockerfile, TIKTOKEN_CACHE_DIR) and (b) makes credits.py degrade to
+#      a heuristic instead of crashing if the encoder is unavailable.
+# Run on the HOST machine (docker + kubectl). Run line by line.
+# v31 because image tags are IMMUTABLE (imagePullPolicy=IfNotPresent) — v30 is
+# live, never reuse a tag.
+# =============================================================================
+
+# ---- 0. Commit the fix (it is COPY'd into the image from the working tree) ---
+cd ~/workspace/TritonDFT
+git add src/credits.py Dockerfile
+git commit -m "fix: pre-cache tiktoken in image + don't crash worker when offline"
+
+# ---- 1. Build & push image (tag = v31) -------------------------------------
+docker login                                          # push to docker.io/yil384
+docker build -t docker.io/yil384/tritondft:v31 .
+docker push  docker.io/yil384/tritondft:v31
+
+# ---- 2. Bump image tag in BOTH manifests (API + worker) --------------------
+sed -i 's#tritondft:v30#tritondft:v31#' k8s/deployment.yaml k8s/worker.yaml
+grep -n 'image:.*tritondft' k8s/deployment.yaml k8s/worker.yaml   # verify -> v31
+
+# ---- 3. Deploy --------------------------------------------------------------
+kubectl config use-context nautilus
+kubectl -n datahub-llm apply -f k8s/deployment.yaml -f k8s/worker.yaml
+
+# ---- 4. Wait for rollout + verify new image --------------------------------
+kubectl -n datahub-llm rollout status deploy/tritondft
+kubectl -n datahub-llm rollout status deploy/tritondft-worker
+kubectl -n datahub-llm get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}' | sort -u
+
+# ---- 5. Watch worker logs (label is k8s-app, 8 pods -> raise stream cap) ----
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=100 -f --max-log-requests 8
+# EXPECT: every pod prints "agent loaded, polling for jobs" and NO tiktoken /
+# NameResolutionError traceback. Then smoke-test assistant mode as before:
+# status -> awaiting_approval, pending_step carries scripts; test approve /
+# suggest / cancel and auto-approve after APPROVAL_TIMEOUT_S (600s).

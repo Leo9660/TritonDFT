@@ -1,0 +1,52 @@
+# =============================================================================
+# TritonDFT — build / push image v32 + deploy to NRP
+# FIX: Materials Project queries failed with
+#        1 validation error for SummaryDoc / material_id / Invalid MPID Format
+#      because emmet-core/mp-api were ~2.5 yrs behind the MP server and the old
+#      MPID validator rejected newer-format material_ids. Verified the upgrade
+#      fixes the exact Si/Fd-3m query (returns mp-149, full structure) with the
+#      production MP_API_KEY in a local venv. Only tool_mp.py uses pymatgen in
+#      the job path (evaluate/* are offline), so blast radius is small.
+#
+#   requirements.txt:  pymatgen 2023.12.18 -> 2025.10.7
+#                      emmet-core 0.68.0   -> 0.85.1
+#                      mp-api     0.35.1   -> 0.45.13
+#   (These are the NEWEST versions that still run on the image's Python 3.10.
+#    Newer pymatgen/emmet-core require Python >=3.11 — do NOT bump past these
+#    unless you also upgrade the base image to python3.11+. emmet-core 0.86.0rc1
+#    declares 3.10 but imports typing.NotRequired which only exists on 3.11.)
+#
+# Run on the HOST machine (docker + kubectl). Run line by line.
+# v32 because image tags are IMMUTABLE — v31 is live, never reuse a tag.
+# =============================================================================
+
+# ---- 0. Commit the fix (COPY'd into the image from the working tree) --------
+cd ~/workspace/TritonDFT
+git add requirements.txt .gitignore
+git commit -m "fix: upgrade mp-api/emmet-core/pymatgen (Invalid MPID Format on MP queries)"
+# NOTE: env_setup.sh / githubtoken.txt are now gitignored — do NOT force-add them.
+
+# ---- 1. Build & push image (tag = v32) -------------------------------------
+docker login                                          # push to docker.io/yil384
+docker build -t docker.io/yil384/tritondft:v32 .
+docker push  docker.io/yil384/tritondft:v32
+
+# ---- 2. Bump image tag in BOTH manifests (API + worker) --------------------
+sed -i 's#tritondft:v31#tritondft:v32#' k8s/deployment.yaml k8s/worker.yaml
+grep -n 'image:.*tritondft' k8s/deployment.yaml k8s/worker.yaml   # verify -> v32
+
+# ---- 3. Deploy --------------------------------------------------------------
+kubectl config use-context nautilus
+kubectl -n datahub-llm apply -f k8s/deployment.yaml -f k8s/worker.yaml
+
+# ---- 4. Wait for rollout + verify new image --------------------------------
+kubectl -n datahub-llm rollout status deploy/tritondft
+kubectl -n datahub-llm rollout status deploy/tritondft-worker
+kubectl -n datahub-llm get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}' | sort -u
+
+# ---- 5. Smoke-test the MP fix ----------------------------------------------
+kubectl -n datahub-llm logs -l k8s-app=tritondft-worker --tail=100 -f --max-log-requests 8
+# Submit the query that used to fail:
+#   "Show me the band structure of silicon, diamond cubic, using vc-relax with LDA"
+# EXPECT: info_query retrieves mp-149 with NO "Invalid MPID Format" error, and
+# the job proceeds past the material-info step.

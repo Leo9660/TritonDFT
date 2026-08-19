@@ -1,0 +1,101 @@
+# =============================================================================
+# TritonDFT — build / push image v40 + deploy to NRP
+#
+# Run on the HOST machine (needs docker + kubectl). Run line by line.
+# v40 because image tags are IMMUTABLE — v39 is live, never reuse a tag.
+#
+# NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
+#
+# WHAT'S IN v40 — one file, one behaviour (commit e1beb3c, src/jobs.py)
+# -----------------------------------------------------------------------------
+#  FIX  With the plots toggle OFF, a finished run displayed nothing at all.
+#
+#       analysis.json — the agent's written conclusion, i.e. the answer to the
+#       user's question — rides in the same `result` blob as the experimental
+#       extraction (band gap, final energy, plot series). The endpoint nulled
+#       the WHOLE blob when plots were off, so the conclusion went with it and
+#       a successful run looked like a failure.
+#
+#       New `_narrative_only()` keeps analysis / material / task_type and drops
+#       every extracted number. The line the toggle draws is now: numbers WE
+#       inferred from QE output are gated; prose the AGENT wrote is not.
+#
+#  Everything else since v39 is the frontend (already live on Pages) and the
+#  v39 runbook itself. No Python dependency changes, no Dockerfile changes.
+#
+# DO NOT deploy this until v39 is verified. If v39 is still rolling out or its
+# smoke test has not passed, finish that first — otherwise a failure has two
+# candidate causes instead of one.
+# =============================================================================
+
+# ---- 0. Re-auth to NRP (tokens last ~21 min) --------------------------------
+#   https://portal.nrp-nautilus.io/  ->  Get Config  ->  overwrite ~/.kube/config
+kubectl -n datahub-llm get pods
+
+# ---- 1. Pull the tree that goes into the image ------------------------------
+cd ~/workspace/TritonDFT
+git pull
+git log --oneline -1        # expect the v40 manifest bump on top of e1beb3c
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v40
+
+# ---- 2. Build & push --------------------------------------------------------
+docker login                                    # push to docker.io/yil384
+docker build -t yil384/tritondft:v40 .
+docker push yil384/tritondft:v40
+
+#   requirements.txt / Dockerfile unchanged since v32 — the pip layer is cached
+#   and this is a fast build. Do NOT pass --no-cache.
+
+# ---- 3. Deploy --------------------------------------------------------------
+#   Manifests carry their own namespace and imagePullPolicy: Always, so `apply`
+#   needs no -n and no `set image`.
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/worker.yaml
+
+kubectl -n datahub-llm rollout status deploy/tritondft --timeout=300s
+kubectl -n datahub-llm rollout status deploy/tritondft-worker --timeout=900s
+
+#   "7 of 8 updated replicas are available…" repeating is NORMAL: maxUnavailable
+#   is 1, so pods are replaced one at a time. src/worker.py has no SIGTERM
+#   handler, so a pod mid-calculation burns the full
+#   terminationGracePeriodSeconds: 60 before SIGKILL — 8 pods x 60s means the
+#   worker rollout can legitimately take ~8 minutes. Only investigate if a pod
+#   shows Pending / ImagePullBackOff / CrashLoopBackOff:
+#     kubectl -n datahub-llm get pods -l app=tritondft-worker
+#     kubectl -n datahub-llm describe pod <name> | tail -30
+
+# ---- 4. Verify the image actually changed -----------------------------------
+#   Check the DIGEST, not the tag — past deploys silently no-op'd.
+kubectl -n datahub-llm get pods -l app=tritondft \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+
+#   NOTE: this fix is in the API path (src/jobs.py), so the deployment that
+#   matters here is `tritondft`, NOT `tritondft-worker`. The worker is rebuilt
+#   from the same image and restarts anyway, but the behaviour change lands in
+#   the API pods.
+
+# ---- 5. Smoke test — this is the whole point of v40 -------------------------
+#   In the web UI, turn the experimental plots toggle OFF, run any short job
+#   (bulk Si SCF is enough), and confirm on completion that:
+#     - the agent's written conclusion IS shown
+#     - Material / Task labels ARE shown
+#     - band gap and final-energy cards are NOT shown
+#     - no plots are rendered
+#
+#   Then flip plots ON and re-run: everything above plus the numbers and plots.
+#
+#   Direct check without the UI:
+#     curl -s -H "Authorization: Bearer $TOK" \
+#       https://<api-host>/jobs/<job_id> | jq '.plots, .result'
+#   plots=false must give a result object containing ONLY analysis / material /
+#   task_type. If it gives null, the old image is still serving.
+
+# =============================================================================
+# Rollback
+#   kubectl -n datahub-llm set image deploy/tritondft        tritondft=docker.io/yil384/tritondft:v39
+#   kubectl -n datahub-llm set image deploy/tritondft-worker tritondft=docker.io/yil384/tritondft:v39
+#
+# Risk: low. One endpoint's response field, no schema change, no migration, no
+# dependency change. The failure mode if _narrative_only() misbehaves is a
+# missing or over-full result panel, not a broken run.
+# =============================================================================
