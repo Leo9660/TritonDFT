@@ -14,7 +14,7 @@ from .workflow import (
     validate_qe_input,
     validate_qe_output,
 )
-from .qe_syntax import QE_SYNTAX_REFERENCE_VERSION, SyntaxFinding, remove_undocumented_namelist_keywords, validate_qe_syntax
+from .qe_syntax import QE_SYNTAX_REFERENCE_VERSION, SyntaxFinding, force_from_scratch, remove_undocumented_namelist_keywords, validate_qe_syntax
 
 __all__ = [
     "ValidationIssue",
@@ -32,5 +32,6 @@ __all__ = [
     "QE_SYNTAX_REFERENCE_VERSION",
     "SyntaxFinding",
     "validate_qe_syntax",
+    "force_from_scratch",
     "remove_undocumented_namelist_keywords",
 ]
