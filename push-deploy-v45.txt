@@ -128,6 +128,18 @@
 #       duration, and anyio's default of 40 threads against 10 connections would
 #       trade event-loop stalls for connection-pool timeouts.
 #
+#  FEAT Pseudopotential MODE — manual vs auto. (Kuntal's point: a library named
+#       in the query should be honoured.) The dropdowns were unconditionally
+#       binding, so "use PBEsol" in a prompt did nothing and nothing said why.
+#       Always letting the query win is wrong too — the control exists for
+#       people meeting DFT for the first time. So:
+#         manual (default) — dropdowns decide; a library named in the prompt is
+#                            ignored, and the log now says so and names the
+#                            setting that overrode it.
+#         auto             — the prompt wins, dropdowns are the fallback. This
+#                            is the pre-dropdown behaviour, for experts.
+#       pseudo_choice now carries "mode"; unknown values fall back to manual.
+#
 #  FEAT New endpoint GET /jobs/{id}/steps/{n}/input, for the UI's input tab.
 #       The UI used to list the whole run directory and filter client-side —
 #       iterdir plus a stat per file over a PVC eight workers are writing to,
@@ -283,7 +295,12 @@ kubectl -n datahub-llm logs -l app=tritondft-worker | grep "restart_mode 'restar
 #      (it was always there, just filtered out) but still no plot: the numbers
 #      in it are degenerate. That run has to be repeated to get a real DOS.
 #
-#   f) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
+#   f) Pseudopotential modes. With "Use my choice" and the dropdown on PBE, ask
+#      for something "with PBEsol" — the run must use PBE and the log must carry
+#      the line explaining that the setting won. Switch to "Let the agent
+#      choose" and repeat: it must now use PBEsol.
+#
+#   g) Raman: ask for the Raman spectrum of Si with the functional set to PBE.
 #      It must fail ONCE, quickly, with RAMAN_REQUIRES_LDA — not grind through
 #      retries. Then switch the functional dropdown to LDA and re-run; that path
 #      should proceed.

@@ -68,7 +68,7 @@ def _clean_pseudo_choice(raw):
     """
     if not isinstance(raw, dict):
         return None
-    from config import XC_CHOICES, REL_CHOICES, ACCURACY_CHOICES, UNAVAILABLE
+    from config import XC_CHOICES, REL_CHOICES, ACCURACY_CHOICES, UNAVAILABLE, PSEUDO_MODES
     xc = str(raw.get("xc", "")).strip()
     rel = str(raw.get("relativistic", "")).strip().upper()
     acc = str(raw.get("accuracy", "")).strip().lower()
@@ -77,7 +77,10 @@ def _clean_pseudo_choice(raw):
         return None
     if (xc, rel) in UNAVAILABLE:
         return None
-    return {"xc": xc, "relativistic": rel, "accuracy": acc}
+    mode = str(raw.get("mode", "manual")).strip().lower()
+    if mode not in PSEUDO_MODES:
+        mode = "manual"
+    return {"xc": xc, "relativistic": rel, "accuracy": acc, "mode": mode}
 
 
 def _valid_uuid(s: str) -> bool:
