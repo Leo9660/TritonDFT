@@ -1,13 +1,13 @@
 # =============================================================================
-# TritonDFT — build / push image v48 + deploy to NRP
+# TritonDFT — build / push image v49 + deploy to NRP
 #
 # Run on the HOST machine (needs docker + kubectl). Run line by line.
-# v48 because image tags are IMMUTABLE — v47 is live, never reuse a tag.
+# v49 because image tags are IMMUTABLE — v48 is live, never reuse a tag.
 #
 # NAMESPACE IS `datahub-llm`. `tritondft` is the DEPLOYMENT name.
 # The postgres role is `tritondft`, NOT `postgres`.
 #
-# WHAT'S IN v48
+# WHAT'S IN v49
 #
 # This supersedes v46. The list below is everything since v44, because the
 # commit v45 and v46 were built from is not known here — run every verification
@@ -18,6 +18,16 @@
 # "calculate" and starts over — a fresh Materials Project lookup and a fresh
 # relaxation. A follow-up can READ the earlier run's files, but nothing carries
 # its charge density or relaxed geometry forward.
+#
+# ⚠️ TWO DAYS BEFORE THE WORKSHOP. This release is deliberately narrow: it
+#    exists for the ev.x fix, which is what makes "report the equilibrium
+#    lattice constant" — three of the starter prompts — fail after three
+#    retries. Nothing here touches resource limits, the database, or the
+#    execution path of any other tool: the command built for pw.x, bands.x,
+#    dos.x and ph.x is byte-for-byte what v48 built.
+#
+#    If anything goes wrong, roll back the image and you are on v48. There is
+#    no migration to undo.
 #
 # ⚠️ THE POD LABEL IS `k8s-app`, NOT `app`.
 #    Every kubectl line in earlier runbooks used `-l app=tritondft...`, which
@@ -363,12 +373,12 @@ kubectl -n datahub-llm get pods
 # ---- 1. Pull ----------------------------------------------------------------
 cd ~/workspace/TritonDFT
 git pull
-grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v48
+grep -n "image:" k8s/worker.yaml k8s/deployment.yaml   # both must say v49
 
 # ---- 2. Build & push --------------------------------------------------------
 docker login
-docker build -t yil384/tritondft:v48 .
-docker push yil384/tritondft:v48
+docker build -t yil384/tritondft:v49 .
+docker push yil384/tritondft:v49
 
 #   NOTE: .dockerignore now excludes env_setup.sh, *.token, tok.json,
 #   k8stoken.txt and *.sql. Those were being baked into every previous image via
@@ -536,5 +546,5 @@ kubectl -n datahub-llm logs -l k8s-app=tritondft-worker | grep "restart_mode 're
 #
 # The scientific consequence is the part that matters: every silicon number this
 # service has produced belongs to a metastable polymorph. Re-run anything from
-# before v48 that is going into the workshop.
+# before v49 that is going into the workshop.
 # =============================================================================
