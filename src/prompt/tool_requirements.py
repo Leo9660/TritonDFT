@@ -350,21 +350,32 @@ evx_requirement_template = """
         * Use the same pseudopotentials, cutoffs, k-point mesh, and occupations.
         * Differ ONLY in lattice volume (uniform scaling).
 
-    [Input file shape]
-    - The input MUST contain exactly one namelist: &EV ... /
-    - No extra sections, no comments, no markdown.
+    [Input file shape — ev.x has NO namelist]
+    - ev.x is an interactive program. It does not read a namelist and it does not
+      accept -in. It asks five questions on stdin, and the input file is simply
+      the five answers, one per line, in this exact order:
 
-    [Energy–volume data]
-    - You MUST provide:
-        * A list of volumes and corresponding total energies, OR
-        * A filename containing volume–energy pairs.
-    - Energies MUST be in Ry.
-    - Volumes MUST be in (Bohr)^3.
+        Ang                 <- units of the first column below: "au" or "Ang"
+        bcc                 <- bravais lattice: fcc, bcc, sc, noncubic or hex
+        4                   <- equation of state: 1=birch1, 2=birch2, 3=keane, 4=murnaghan
+        ev_data.dat         <- the data file described below
+        ev_results.out      <- where ev.x writes the fit
 
-    [Paths / reuse]
-    - If reading from file:
-        * The file MUST be accessible from the working directory.
-    - prefix/outdir are NOT used by ev.x unless explicitly required by the input format.
+    - Writing "&EV ... /" produces a Fortran end-of-file error before anything is
+      read. There is no namelist to get right.
+
+    [The data file]
+    - You must ALSO write the data file named on line 4. Two columns, one row per
+      volume, no header:
+
+        <lattice parameter or volume>   <total energy in Ry>
+
+    - The first column is the lattice parameter when the lattice is fcc/bcc/sc/hex,
+      and the VOLUME when it is noncubic. Its unit is whatever line 1 declared.
+    - Energies are always in Ry, taken from the "!    total energy" line of each
+      scf run.
+    - At least 5 rows, spanning roughly +/-5% around the expected equilibrium.
+      Three points cannot constrain a four-parameter fit.
 
     [Equation of state]
     - You MUST specify the equation-of-state fitting form.

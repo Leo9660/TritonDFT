@@ -200,7 +200,15 @@ FN_MAP: Dict[str, ToolSpec] = {
         takes_prefix=False,
         required=(),
         optional=("input_from",),
-        description="Calculate elastic constants and bulk modulus from vc-relax outputs",
+        description=(
+            "Fit an equation of state to a table of volume/energy pairs, giving "
+            "the equilibrium volume and the bulk modulus. REQUIRES several "
+            "completed scf runs at DIFFERENT volumes, whose energies are written "
+            "into one data file first. It does NOT read a vc-relax output and is "
+            "NOT how you obtain a relaxed lattice constant — that is already in "
+            "the vc-relax output's CELL_PARAMETERS. It computes no elastic "
+            "constants beyond the bulk modulus."
+        ),
         requirement_key="evx",
         parse_requirement_key="evx",
     ),

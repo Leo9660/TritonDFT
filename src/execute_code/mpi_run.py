@@ -95,6 +95,13 @@ def run_with_mpirun(
         work_dir,
         verbose,
         lambda e, inp, out: (
+            # ev.x is an interactive prompt-driven tool: it reads its answers
+            # from STDIN and does not understand -in. Given -in it saw an empty
+            # stdin and died with "Fortran runtime error: End of file" at
+            # ev.f90:80, every time. It is also serial, so mpirun is not just
+            # unnecessary here but launches eight copies of a prompt reader.
+            f"{shlex.quote(e)} < {shlex.quote(inp)} > {shlex.quote(out)} 2>&1"
+            if os.path.basename(e) == "ev.x" else
             # --bind-to none + --oversubscribe: K8s CPU cgroups rarely expose a
             # clean set of bindable cores, so Open MPI's default core binding
             # aborts with "no available cpus" on busy/opportunistic nodes. Don't
