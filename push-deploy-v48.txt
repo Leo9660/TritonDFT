@@ -26,6 +26,27 @@
 #
 # New since v47:
 #
+#  FIX  ⚠️ ev.x could never have worked. Three faults, all ours.
+#       1. It was invoked as "mpirun -np 8 ev.x -in 02_ev.in". ev.x is an
+#          INTERACTIVE program: it reads five answers from stdin and does not
+#          understand -in, so stdin was empty and it died with
+#            Fortran runtime error: End of file   at ev.f90:80
+#          every attempt, until the step exhausted its retries. It is also
+#          serial, so eight ranks meant eight copies of a prompt reader. It now
+#          runs as "ev.x < input > output" with parallel_np forced to 1.
+#       2. tool_requirements told the model to write "&EV ... /". ev.x has no
+#          namelist at all. The real input is five lines — units, bravais
+#          lattice, EOS type, data filename, output filename — and a separate
+#          two-column data file the model must also write. Both are spelled out
+#          now, including that at least 5 volumes are needed since three points
+#          cannot constrain a four-parameter fit.
+#       3. Its tool description read "Calculate elastic constants and bulk
+#          modulus from vc-relax outputs", which is wrong twice over and is why
+#          the planner picked it for "extract the lattice constant from the
+#          relaxed cell". ev.x fits an equation of state across SEVERAL volumes;
+#          a relaxed lattice constant is already in the vc-relax output's
+#          CELL_PARAMETERS and needs no post-processing at all.
+#
 #  FIX  ⚠️ The connection pool could exhaust Postgres under load.
 #       pool_size 5 + max_overflow 5 was applied to EVERY process: 2 API + 8
 #       workers = 10 x 10 = exactly 100, against a default max_connections of

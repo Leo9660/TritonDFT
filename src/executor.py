@@ -80,8 +80,10 @@ def run_qe_inputs(
                 return retcodes, resolved_outputs
             else:
                 return "probe_failed", commands
-        if exec_name == "bands.x" or exec_name == "dos.x":
-            parallel_np = 1  # bands.x does not support MPI parallelization
+        if exec_name in ("bands.x", "dos.x", "ev.x"):
+            # None of these are MPI-parallel. ev.x in particular reads an
+            # interactive prompt from stdin, so eight ranks means eight readers.
+            parallel_np = 1
         return run_with_mpirun(
             exec_path,
             input_paths,
