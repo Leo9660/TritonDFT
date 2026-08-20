@@ -77,6 +77,10 @@ spec:
         # pools only shrinks the plane-wave group each one gets.
         - name: QE_NK
           value: "0"
+        # Tells db.py this process is a worker, so it takes a small connection
+        # pool (2+2) instead of the API's 10. See the note there.
+        - name: TRITONDFT_ROLE
+          value: "worker"
         - name: PYTHONUNBUFFERED
           value: "1"
         - name: OMP_NUM_THREADS

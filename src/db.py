@@ -13,14 +13,27 @@ DATABASE_URL = os.environ.get(
 )
 
 Base = declarative_base()
-# Bound the pool: with ~10 pods (2 API + 8 workers) the default 5+10 per process
-# could exceed Postgres' default max_connections=100. 5+5 per process → ≤100.
+# Sized per ROLE, because the two need very different things and the sum has to
+# fit under Postgres' default max_connections=100 (97 usable — three are held
+# for superusers).
+#
+# An API pod serves requests from a threadpool capped at 10, and each in-flight
+# request holds a session for its whole duration, so it needs 10.
+# A worker is one thread running one job; it opens a session, uses it, closes
+# it. Ten was a worst case it can never reach.
+#
+#   2 API x 10  +  8 workers x 4  =  52, comfortably under 97.
+# It used to be 10 apiece: 10 processes x 10 = exactly 100, so a busy moment
+# could hand out the last connection and the next caller got
+# "FATAL: sorry, too many clients already".
+_IS_WORKER = os.getenv("TRITONDFT_ROLE", "") == "worker"
+_POOL, _OVERFLOW = (2, 2) if _IS_WORKER else (5, 5)
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
     pool_recycle=3600,
-    pool_size=5,
-    max_overflow=5,
+    pool_size=_POOL,
+    max_overflow=_OVERFLOW,
     future=True,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
