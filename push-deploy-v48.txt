@@ -26,6 +26,24 @@
 #
 # New since v47:
 #
+#  FIX  ⚠️ The connection pool could exhaust Postgres under load.
+#       pool_size 5 + max_overflow 5 was applied to EVERY process: 2 API + 8
+#       workers = 10 x 10 = exactly 100, against a default max_connections of
+#       100 of which 3 are reserved for superusers. A busy moment could hand out
+#       the last connection and the next caller would get
+#         FATAL: sorry, too many clients already
+#       Sized per role now. An API pod serves from a threadpool capped at 10 and
+#       each in-flight request holds a session for its whole duration, so it
+#       keeps 10; a worker is one thread running one job, so 2+2 is generous.
+#       2x10 + 8x4 = 52 against 97. Needs TRITONDFT_ROLE=worker in worker.yaml,
+#       which this release adds.
+#
+#  FEAT gpt-5.6-terra in the model dropdown. The id and the price are
+#       UNVERIFIED — added on request without a published spec. A wrong id fails
+#       the OpenAI call outright, which is the loud, easy-to-spot failure; the
+#       price is set to the flagship rate so a mistake overcharges rather than
+#       undercharges. Confirm both before the workshop.
+#
 #  FIX  A run that produced nothing rendered as a silent success.
 #       "How many steps did the vc-relax take?" is not a calculation, so the
 #       agent found no material, returned early, and the UI showed

@@ -24,6 +24,11 @@ USD_PER_CREDIT = 0.03
 # call — for those, billing uses that real cost (see reconcile). The prices here
 # are only a pre-charge reservation estimate.
 MODEL_PRICES = {
+    # NOTE: the id and the price here are UNVERIFIED — added on request without
+    # a published spec. If the id is wrong the OpenAI call fails outright, which
+    # is the loud failure and the easy one to spot. The price is set to the
+    # flagship rate so a mistake overcharges rather than undercharges.
+    "gpt-5.6-terra": (1.25, 10.00),
     "gpt-5.2":      (1.25, 10.00),
     "gpt-5.1":      (1.25, 10.00),
     "gpt-5":        (1.25, 10.00),
