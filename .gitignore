@@ -19,3 +19,14 @@ get-mp-key.txt
 *.token
 tok.json
 k8stoken.txt
+
+# Local-only: shells that export credentials — NEVER commit.
+source.sh
+env_setup.sh
+
+# Local operator notes / runbooks / scratch — keep out of the repo.
+push-deploy-*.txt
+troubleshoot-*.txt
+Ubuntu server creation.txt
+*.png
+.claude/settings.local.json
