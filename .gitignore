@@ -3,8 +3,6 @@ job_*
 .venv
 *__pycache__
 *config.yaml
-k8s/secret.yaml
-k8s/postgres.yaml
 build.log
 install-checkpoints/
 .env
@@ -30,3 +28,8 @@ troubleshoot-*.txt
 Ubuntu server creation.txt
 *.png
 .claude/settings.local.json
+
+# Cluster operations — deployment manifests and NRP maintenance scripts.
+# Not part of the published source; kept locally only.
+k8s/
+scripts/renew-nrp-deployments.sh

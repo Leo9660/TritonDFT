@@ -4,9 +4,30 @@ import resend
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "TritonDFT <admin@tritondft.com>")
 LOGO_URL = os.environ.get("LOGO_URL", "https://chat.tritondft.com/logo.png")
+# Attribution shown in the email footer. Left generic by default so the
+# source carries no institutional identifiers; set these to brand the build.
+EMAIL_FOOTER_ORG = os.environ.get("EMAIL_FOOTER_ORG", "")
+EMAIL_FOOTER_URL = os.environ.get("EMAIL_FOOTER_URL", "")
 
 if RESEND_API_KEY:
     resend.api_key = RESEND_API_KEY
+
+
+def _footer_html() -> str:
+    """Optional 'Built at <org>' line for the HTML footer; empty when unset."""
+    if not EMAIL_FOOTER_ORG:
+        return ""
+    if EMAIL_FOOTER_URL:
+        return (
+            f'Built at <a href="{EMAIL_FOOTER_URL}" '
+            f'style="color:#94a3b8;text-decoration:underline;">{EMAIL_FOOTER_ORG}</a>'
+        )
+    return f"Built at {EMAIL_FOOTER_ORG}"
+
+
+def _footer_text() -> str:
+    """Plain-text counterpart of _footer_html."""
+    return f"Built at {EMAIL_FOOTER_ORG}\n" if EMAIL_FOOTER_ORG else ""
 
 
 def _magic_link_html(link: str) -> str:
@@ -89,7 +110,7 @@ def _magic_link_html(link: str) -> str:
           <td align="center" style="padding:0 16px;">
             <p style="margin:0;font-size:11px;line-height:1.6;color:#94a3b8;">
               <a href="https://tritondft.com" style="color:#94a3b8;text-decoration:none;font-weight:600;">TritonDFT</a> &middot; LLM-driven density functional theory<br/>
-              Built at <a href="https://yufeiding.ucsd.edu/" style="color:#94a3b8;text-decoration:underline;">Picasso Lab</a>, UC San Diego &middot; La Jolla, CA
+              {_footer_html()}
             </p>
           </td>
         </tr>
@@ -112,7 +133,7 @@ def _magic_link_text(link: str) -> str:
         "Didn't request this? You can safely ignore this email.\n\n"
         "--\n"
         "TritonDFT - LLM-driven density functional theory\n"
-        "Built at Picasso Lab, UC San Diego\n"
+        f"{_footer_text()}"
     )
 
 

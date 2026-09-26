@@ -32,7 +32,7 @@ JWT_ALG = "HS256"
 JWT_TTL_DAYS = 365  # 1 year as requested
 MAGIC_LINK_TTL_MINUTES = 15
 FRONTEND_BASE_URL = os.environ.get(
-    "FRONTEND_BASE_URL", "https://yil384.github.io/TritonDFT-frontend"
+    "FRONTEND_BASE_URL", "http://localhost:5173"
 )
 COOKIE_NAME = "tritondft_token"
 
