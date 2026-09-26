@@ -22,7 +22,7 @@
 #SBATCH -o qe.out
 #SBATCH -e qe.err
 #SBATCH --export=ALL
-#SBATCH --account=TG-PHY250365
+#SBATCH --account=YOUR_ALLOCATION
 #SBATCH --job-name=tritondft-qe
 
 module reset

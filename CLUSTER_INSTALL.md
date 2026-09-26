@@ -115,16 +115,16 @@ The displayed path must remain inside `.venv`.
 
 ## 4. Configure the Git branch and update the code
 
-The working branch is `kuntal-version`. Set its upstream once:
+The working branch is `main`. Set its upstream once:
 
 ```bash
-git branch --set-upstream-to=origin/kuntal-version kuntal-version
+git branch --set-upstream-to=origin/main main
 ```
 
 Expected output:
 
 ```text
-branch 'kuntal-version' set up to track 'origin/kuntal-version'.
+branch 'main' set up to track 'origin/main'.
 ```
 
 Then update without creating an accidental merge commit:
@@ -138,7 +138,7 @@ branch to use. `--ff-only` stops safely if local and remote histories have
 diverged.
 
 If the upstream command says the remote branch is unknown, run
-`git fetch origin kuntal-version` and retry. If pull says an untracked file
+`git fetch origin main` and retry. If pull says an untracked file
 would be overwritten, move that file to a named backup outside the repository
 and retry. The previous installation encountered this with a manually created
 `tritondft-cluster` file.
@@ -151,7 +151,7 @@ git status --short
 git rev-parse HEAD
 ```
 
-The current branch should show `[origin/kuntal-version]`. Record the commit ID
+The current branch should show `[origin/main]`. Record the commit ID
 when reporting an installation problem.
 
 ## 5. Install the project requirements

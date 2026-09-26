@@ -15,7 +15,7 @@ Use on {parallel_np} ranks for mpirun.
 #SBATCH -e qe.err
 #SBATCH -p compute
 #SBATCH --export=ALL
-#SBATCH --account=TG-PHY250365
+#SBATCH --account=YOUR_ALLOCATION
 #SBATCH --job-name=ph
 #SBATCH --mem=0
 module reset
