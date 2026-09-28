@@ -33,3 +33,17 @@ Ubuntu server creation.txt
 # Not part of the published source; kept locally only.
 k8s/
 scripts/renew-nrp-deployments.sh
+
+# Deployment, cluster and configuration scaffolding: kept locally, out of the
+# repository. The published tree is the method -- src, benchmark, tests and the
+# pseudopotentials they need.
+Dockerfile
+.dockerignore
+CLUSTER_INSTALL.md
+tritondft-cluster
+example_slurm_job_file.txt
+scripts/run_cluster_agent.sh
+config/config.sample.yaml
+.env.example
+.env.cluster.example
+server.py
